@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FormulaKit</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="parser.js"></script>
+  <script src="app.js"></script>
+  <style>
+    :root {
+      --bg: #ffffff; --panel: #f6f7f9; --text: #1d2228; --muted: #6b7380; --line: #e2e5ea;
+      --accent: #1f6f43; --accent-text: #ffffff; --hover: #eef1f4; --sel: #dcefe3; --err: #b3261e;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1f2124; --panel: #27292d; --text: #e6e8eb; --muted: #9aa1ab; --line: #383b40;
+        --accent: #3fa36b; --accent-text: #0e1a13; --hover: #2f3236; --sel: #24432f; --err: #ff8a80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    header { padding: 10px 12px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
+    h1 { font-size: 15px; margin: 0 0 8px; letter-spacing: .2px; }
+    nav { display: flex; gap: 2px; }
+    nav button { flex: 1; border: 0; background: none; color: var(--muted); padding: 7px 4px; font: inherit; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
+    nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+    main { padding: 12px; }
+    section { display: none; }
+    section.on { display: block; }
+    .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+    .btn { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
+    .btn:hover { background: var(--hover); }
+    .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+    .btn small { color: inherit; opacity: .7; margin-left: 4px; font-size: 11px; }
+    .status { min-height: 18px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    .status.err { color: var(--err); }
+    .title { font-weight: 600; margin: 4px 0 6px; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; word-break: break-all; }
+    .list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .item { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); background: var(--bg); color: var(--text); padding: 6px 8px; font: inherit; cursor: pointer; }
+    .item:first-child { border-top: 0; }
+    .item:hover, .item:focus { background: var(--hover); outline: none; }
+    .item.cur { background: var(--sel); }
+    .item .a { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .item .v { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; text-align: right; }
+    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .empty { color: var(--muted); padding: 8px 0; }
+    .code { font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-all; margin-bottom: 10px; }
+    .label { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 10px 0 4px; }
+    .big { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .step { font-family: var(--mono); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px dashed var(--line); }
+    .step .r { font-weight: 600; white-space: nowrap; }
+    table.legend { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    table.legend td { padding: 4px 6px; border-top: 1px solid var(--line); }
+    table.legend td.n { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+    .chip { display: inline-block; min-width: 20px; text-align: center; font-family: var(--mono); font-weight: 700; border-radius: 4px; padding: 0 4px; }
+    .keys td { padding: 3px 6px; border-top: 1px solid var(--line); }
+    kbd { font-family: var(--mono); font-size: 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+    .note { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FormulaKit</h1>
+    <nav>
+      <button data-tab="trace" class="on">Trace</button>
+      <button data-tab="explore">Explore</button>
+      <button data-tab="map">Map</button>
+      <button data-tab="format">Format</button>
+      <button data-tab="keys">Keys</button>
+    </nav>
+  </header>
+  <main>
+    <div id="status" class="status"></div>
+
+    <section id="tab-trace" class="on">
+      <div class="row">
+        <button class="btn primary" id="bPrec">Precedents</button>
+        <button class="btn primary" id="bDep">Dependents</button>
+        <button class="btn" id="bBack">Back</button>
+      </div>
+      <div id="traceOut"><div class="empty">Select a cell and press Precedents or Dependents.</div></div>
+    </section>
+
+    <section id="tab-explore">
+      <div class="row"><button class="btn primary" id="bExplore">Explore active cell</button></div>
+      <div id="exploreOut"><div class="empty">Shows the formula, the same formula with values, and each input.</div></div>
+    </section>
+
+    <section id="tab-map">
+      <div class="row">
+        <button class="btn primary" id="bMap">Map active sheet</button>
+        <button class="btn" id="bMapDel">Remove map sheets</button>
+      </div>
+      <div id="mapOut"><div class="empty">Adds a "Map" sheet that labels every cell of the active sheet at the same address, and lists cells worth reviewing.</div></div>
+    </section>
+
+    <section id="tab-format">
+      <div class="row"><button class="btn" id="bNum">Cycle number format</button></div>
+      <div class="row"><button class="btn" id="bFont">Cycle font colour</button></div>
+      <div class="row"><button class="btn" id="bAuto">Auto-colour selection</button></div>
+      <div class="row"><button class="btn" id="bBorder">Cycle borders</button></div>
+      <p class="note">Number formats: #,##0 → 0.0 → 0.00 → % → x multiple → date → General.<br>
+      Font colours: blue → green → black.<br>
+      Auto-colour: typed numbers blue, links to other sheets green, other formulas black.<br>
+      Borders: bottom line → total line → box → none.</p>
+    </section>
+
+    <section id="tab-keys">
+      <table class="keys" id="keysTable"></table>
+      <p class="note">On a Mac, Ctrl = ⌘ Command and Alt = ⌥ Option. If Excel already uses a shortcut, it asks which one to keep.</p>
+    </section>
+  </main>
+</body>
+</html>

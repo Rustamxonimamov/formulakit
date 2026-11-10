@@ -1,0 +1,126 @@
+{
+  "actions": [
+    {
+      "id": "FK_PRECEDENTS",
+      "type": "ExecuteFunction",
+      "name": "Trace precedents"
+    },
+    {
+      "id": "FK_DEPENDENTS",
+      "type": "ExecuteFunction",
+      "name": "Trace dependents"
+    },
+    {
+      "id": "FK_NEXT",
+      "type": "ExecuteFunction",
+      "name": "Jump to next in list"
+    },
+    {
+      "id": "FK_BACK",
+      "type": "ExecuteFunction",
+      "name": "Go back"
+    },
+    {
+      "id": "FK_EXPLORE",
+      "type": "ExecuteFunction",
+      "name": "Formula explorer"
+    },
+    {
+      "id": "FK_MAP",
+      "type": "ExecuteFunction",
+      "name": "Model map"
+    },
+    {
+      "id": "FK_NUMFMT",
+      "type": "ExecuteFunction",
+      "name": "Cycle number format"
+    },
+    {
+      "id": "FK_FONT",
+      "type": "ExecuteFunction",
+      "name": "Cycle font colour"
+    },
+    {
+      "id": "FK_AUTOCOLOUR",
+      "type": "ExecuteFunction",
+      "name": "Auto-colour"
+    },
+    {
+      "id": "FK_BORDERS",
+      "type": "ExecuteFunction",
+      "name": "Cycle borders"
+    }
+  ],
+  "shortcuts": [
+    {
+      "action": "FK_PRECEDENTS",
+      "key": {
+        "default": "Ctrl+Alt+P",
+        "mac": "Command+Option+P"
+      }
+    },
+    {
+      "action": "FK_DEPENDENTS",
+      "key": {
+        "default": "Ctrl+Alt+D",
+        "mac": "Command+Option+D"
+      }
+    },
+    {
+      "action": "FK_NEXT",
+      "key": {
+        "default": "Ctrl+Alt+J",
+        "mac": "Command+Option+J"
+      }
+    },
+    {
+      "action": "FK_BACK",
+      "key": {
+        "default": "Ctrl+Alt+B",
+        "mac": "Command+Option+B"
+      }
+    },
+    {
+      "action": "FK_EXPLORE",
+      "key": {
+        "default": "Ctrl+Alt+E",
+        "mac": "Command+Option+E"
+      }
+    },
+    {
+      "action": "FK_MAP",
+      "key": {
+        "default": "Ctrl+Alt+M",
+        "mac": "Command+Option+M"
+      }
+    },
+    {
+      "action": "FK_NUMFMT",
+      "key": {
+        "default": "Ctrl+Alt+N",
+        "mac": "Command+Option+N"
+      }
+    },
+    {
+      "action": "FK_FONT",
+      "key": {
+        "default": "Ctrl+Alt+C",
+        "mac": "Command+Option+C"
+      }
+    },
+    {
+      "action": "FK_AUTOCOLOUR",
+      "key": {
+        "default": "Ctrl+Alt+A",
+        "mac": "Command+Option+A"
+      }
+    },
+    {
+      "action": "FK_BORDERS",
+      "key": {
+        "default": "Ctrl+Alt+K",
+        "mac": "Command+Option+K"
+      }
+    }
+  ]
+}
