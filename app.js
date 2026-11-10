@@ -26,8 +26,8 @@
     "General"
   ];
   var KEYS = [
-    ["Trace precedents", "P"], ["Trace dependents", "D"], ["Jump to next in list", "J"],
-    ["Go back", "B"], ["Formula explorer", "E"], ["Model map", "M"],
+    ["Trace precedents", "P"], ["Trace dependents", "U"], ["Jump to next in list", "J"],
+    ["Go back", "B"], ["Formula explorer", "E"], ["Model map", "G"],
     ["Cycle number format", "N"], ["Cycle font colour", "C"], ["Auto-colour", "A"], ["Cycle borders", "K"]
   ];
 
@@ -203,6 +203,7 @@
         rng.values.forEach(function (row) {
           row.forEach(function (v) { if (typeof v === "number") { sum += v; nums++; } });
         });
+        out.values = rng.values;
         out.display = rng.values.length + "×" + rng.values[0].length + (nums ? "  Σ " + fmtNum(sum) : "");
       } else {
         out.display = rng.cellCount.toLocaleString() + " cells";
@@ -234,6 +235,7 @@
 
   function renderTrace(title, sub, list, emptyMsg) {
     S.list = list;
+    S.listBox = "traceOut";
     S.idx = -1;
     S.originPushed = false;
     var html = '<div class="title">' + esc(title) + "</div>";
@@ -241,16 +243,21 @@
     if (!list.length) {
       html += '<div class="empty">' + esc(emptyMsg) + "</div>";
     } else {
-      html += '<div class="list">';
-      list.forEach(function (it, i) {
-        html += '<button class="item" data-i="' + i + '"><span class="a">' +
-          (it.color ? '<span class="sw" style="background:' + it.color + '"></span>' : "") +
-          esc(it.label) + '</span><span class="v">' + esc(it.value || "") + "</span></button>";
-      });
-      html += "</div>";
+      html += listHtml(list);
     }
     $("traceOut").innerHTML = html;
     bindList($("traceOut"));
+  }
+
+  function listHtml(list) {
+    var html = '<div class="list">';
+    list.forEach(function (it, i) {
+      html += '<button class="item" data-i="' + i + '"><span class="a">' +
+        (it.color ? '<span class="sw" style="background:' + it.color + '"></span>' : "") +
+        esc(it.label) + (it.name ? '<span class="nm">' + esc(it.name) + "</span>" : "") +
+        '</span><span class="v">' + esc(it.value || "") + "</span></button>";
+    });
+    return html + "</div>";
   }
 
   function bindList(root) {
@@ -281,34 +288,13 @@
     S.originPushed = true;
     if (list === S.list) {
       S.idx = i;
-      var btns = $("traceOut").querySelectorAll(".item");
+      var btns = document.querySelectorAll("#" + S.listBox + " .item");
       for (var k = 0; k < btns.length; k++) btns[k].classList.toggle("cur", k === i);
     }
   }
 
   async function tracePrecedents() {
-    showTab("trace");
-    await showPane();
-    await Excel.run(async function (ctx) {
-      var a = await getActive(ctx);
-      if (a.formula.charAt(0) !== "=") {
-        renderTrace("Precedents of " + a.addr, "", [], "This cell has no formula.");
-        return;
-      }
-      var refs = FK.findRefs(a.formula);
-      var items = await resolveRefs(ctx, a, refs);
-      var seen = {}, list = [], colorOf = {};
-      items.forEach(function (it, i) {
-        if (!it) return;
-        var key = (it.sheet + "!" + it.addr).toUpperCase();
-        if (!colorOf[key]) colorOf[key] = COLORS[Object.keys(colorOf).length % COLORS.length];
-        if (seen[key]) return;
-        seen[key] = true;
-        list.push({ sheet: it.sheet, addr: it.addr, label: label(it.sheet, it.addr, a.sheet), value: it.display, color: colorOf[key] });
-      });
-      renderTrace("Precedents of " + label(a.sheet, a.addr, ""), a.formula, list,
-        "No references to cells in this workbook (links to other files are skipped).");
-    });
+    await analyze("trace");
   }
 
   async function scanDependents(ctx, a) {
@@ -421,106 +407,287 @@
     S.originPushed = false;
   }
 
-  // ------------------------------------------------------------------ Explorer
+  // ------------------------------------------------------------------ Explorer (precedents + breakdown)
 
-  function highlight(formula, refs, colorOf) {
-    var html = "", pos = 0;
+  var LETTER = /[A-Za-zÀ-ɏЀ-ӿ]/;
+  var DATEISH = /^(19|20)\d{2}$|^\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}$|^[A-Za-zЀ-ӿ]{3,9}[\s\-']\d{2,4}$|^(FY|Q[1-4]|H[12])/i;
+
+  function shorten(s, n) {
+    s = String(s).replace(/\s+/g, " ").trim();
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+
+  // Row label (first text cell with letters, left of the cell) and column header
+  // (nearest text or date-like cell above) for each {sheet, addr}.
+  async function loadLabels(ctx, cells) {
+    var jobs = cells.map(function (c) {
+      var b = FK.parseA1(c.addr);
+      if (!b || !c.sheet) return null;
+      var ws = ctx.workbook.worksheets.getItem(c.sheet);
+      var j = { c: c, b: b, row: null, col: null };
+      if (b.c1 > 1) {
+        j.row = ws.getRangeByIndexes(b.r1 - 1, 0, 1, Math.min(b.c1 - 1, 30));
+        j.row.load("values,valueTypes");
+      }
+      if (b.r1 > 1) {
+        var top = Math.max(0, b.r1 - 1 - 40);
+        j.col = ws.getRangeByIndexes(top, b.c1 - 1, b.r1 - 1 - top, 1);
+        j.col.load("text,valueTypes");
+      }
+      return j;
+    });
+    await ctx.sync();
+    jobs.forEach(function (j) {
+      if (!j) return;
+      j.c.rowLabel = "";
+      j.c.colHeader = "";
+      if (j.row) {
+        var vals = j.row.values[0], types = j.row.valueTypes[0];
+        for (var i = 0; i < vals.length; i++) {
+          if (types[i] === "String" && LETTER.test(vals[i])) { j.c.rowLabel = shorten(vals[i], 40); break; }
+        }
+      }
+      if (j.col) {
+        for (var r = j.col.text.length - 1; r >= 0; r--) {
+          var t = String(j.col.text[r][0]).trim(), ty = j.col.valueTypes[r][0];
+          if (!t) continue;
+          if ((ty === "String" && t.length <= 40) || ((ty === "Double" || ty === "Integer") && DATEISH.test(t))) {
+            j.c.colHeader = shorten(t, 25);
+            break;
+          }
+        }
+      }
+    });
+  }
+
+  // Short readable name for an input, relative to the cell being explored.
+  function nameFor(it, home) {
+    var parts = [];
+    var b = FK.parseA1(it.addr), hb = FK.parseA1(home.addr);
+    var sameCol = b && hb && b.c1 === hb.c1 && it.sheet === home.sheet;
+    if (it.rowLabel) parts.push(it.rowLabel);
+    if (it.colHeader && (!sameCol || !it.rowLabel)) parts.push(it.colHeader);
+    return parts.join(" · ");
+  }
+
+  function fmtVal(v) {
+    if (v === undefined) return "?";
+    if (FK.isErr(v)) return v.err;
+    if (FK.isRange(v)) return "range";
+    if (v && v.missing) return "(blank)";
+    if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+    if (typeof v === "number") return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    return '"' + shorten(v, 30) + '"';
+  }
+
+  function sliceHtml(f, refs, s, e, colorOf) {
+    var html = "", pos = s;
     refs.forEach(function (r) {
-      html += esc(formula.slice(pos, r.start));
+      if (r.start < s || r.end > e) return;
+      html += esc(f.slice(pos, r.start));
       var c = colorOf[r.start];
       html += c ? '<b style="color:' + c + '">' + esc(r.text) + "</b>" : esc(r.text);
       pos = r.end;
     });
-    return html + esc(formula.slice(pos));
+    return html + esc(f.slice(pos, e));
   }
 
-  async function explore() {
-    showTab("explore");
-    await showPane();
-    await Excel.run(async function (ctx) {
-      var a = await getActive(ctx);
-      if (a.formula.charAt(0) !== "=") {
-        $("exploreOut").innerHTML = '<div class="title">' + esc(label(a.sheet, a.addr, "")) +
-          '</div><div class="empty">No formula. Value: ' + esc(fmtValue(a.value, a.type, a.text)) + "</div>";
-        return;
-      }
-      var refs = FK.findRefs(a.formula);
-      var items = await resolveRefs(ctx, a, refs);
-
-      var colorOf = {}, keyColor = {}, list = [], seen = {};
-      var sub = a.formula;
-      for (var i = refs.length - 1; i >= 0; i--) {
-        if (items[i] && items[i].cellCount === 1) {
-          sub = sub.slice(0, refs[i].start) + FK.literal(items[i].value, items[i].type) + sub.slice(refs[i].end);
-        }
-      }
-      items.forEach(function (it, i) {
-        if (!it) return;
-        var key = (it.sheet + "!" + it.addr).toUpperCase();
-        if (!keyColor[key]) keyColor[key] = COLORS[Object.keys(keyColor).length % COLORS.length];
-        colorOf[refs[i].start] = keyColor[key];
-        if (!seen[key]) {
-          seen[key] = true;
-          list.push({ sheet: it.sheet, addr: it.addr, label: label(it.sheet, it.addr, a.sheet), value: it.display, color: keyColor[key] });
-        }
-      });
-
-      S.explore = { a: a, refs: refs };
-      var html = '<div class="title">' + esc(label(a.sheet, a.addr, "")) + "</div>" +
-        '<div class="big">' + esc(fmtValue(a.value, a.type, a.text)) + "</div>" +
-        '<div class="label">Formula</div><div class="code">' + highlight(a.formula, refs, colorOf) + "</div>" +
-        '<div class="label">With values</div><div class="code">' + esc(sub) + "</div>";
-      if (FK.functionParts(a.formula).length) {
-        html += '<div class="row"><button class="btn" id="bParts">Evaluate each function</button></div><div id="partsOut"></div>';
-      }
-      html += '<div class="label">Inputs</div><div id="exploreList"></div>';
-      $("exploreOut").innerHTML = html;
-
-      // reuse the trace list so clicks and the jump shortcut work
-      renderTrace("Precedents of " + label(a.sheet, a.addr, ""), a.formula, list, "No inputs in this workbook.");
-      var lst = $("exploreList");
-      lst.innerHTML = list.length ? $("traceOut").querySelector(".list").outerHTML : '<div class="empty">No inputs in this workbook.</div>';
-      bindList(lst);
-      if ($("bParts")) $("bParts").addEventListener("click", guard(evaluateParts));
+  function wordsHtml(f, refs, colorOf, words) {
+    var html = "", pos = 1;
+    function plain(t) { return esc(t).replace(/\*/g, " × ").replace(/\//g, " ÷ "); }
+    refs.forEach(function (r) {
+      html += plain(f.slice(pos, r.start));
+      var c = colorOf[r.start], w = words[r.start];
+      html += c ? '<span class="w" style="border-color:' + c + ";color:" + c + '">' + esc(w || r.text) + "</span>" : esc(r.text);
+      pos = r.end;
     });
+    return html + plain(f.slice(pos));
   }
 
-  async function evaluateParts() {
-    var ex = S.explore;
-    if (!ex) return;
-    var q = FK.qualify(ex.a.formula, ex.refs, ex.a.sheet);
-    var parts = FK.functionParts(q).slice(0, 25);
-    if (!parts.length) return;
-    var prefix = FK.quoteSheet(ex.a.sheet) + "!";
-    var results = [];
+  var OP_LABEL = { "+": "+", "-": "−", "*": "×", "/": "÷", "^": "^", "&": "&", "=": "=", "<>": "≠", "<": "<", ">": ">", "<=": "≤", ">=": "≥" };
+  var ARG_NAMES = {
+    IF: ["if", "then", "else"], IFERROR: ["value", "if error"], ROUND: ["", "digits"], ROUNDUP: ["", "digits"],
+    ROUNDDOWN: ["", "digits"], VLOOKUP: ["find", "in", "column", "exact?"], XLOOKUP: ["find", "in", "return"],
+    INDEX: ["from", "row", "col"], MATCH: ["find", "in", "type"], SUMIF: ["range", "criteria", "sum"], SUMIFS: ["sum", "range", "criteria"]
+  };
 
+  function group(op) { return op === "+" || op === "-" ? "add" : op === "*" || op === "/" ? "mul" : null; }
+
+  // Flatten the tree into display rows.
+  function treeRows(root, ex) {
+    var rows = [];
+    function core(n) { while (n.k === "paren") n = n.x; return n; }
+    function walk(n, depth, tag) {
+      if (rows.length > 150) return;
+      var c = core(n);
+      var row = { depth: depth, tag: tag, node: n, core: c };
+      rows.push(row);
+      if (c.k === "bin" && group(c.op)) {
+        var g = group(c.op), list = [];
+        (function collect(m, op) {
+          if (m.k === "bin" && group(m.op) === g) { collect(m.l, op); list.push({ op: m.op, n: m.r }); }
+          else list.push({ op: op, n: m });
+        })(c, "");
+        list.forEach(function (x) { walk(x.n, depth + 1, x.op ? OP_LABEL[x.op] : ""); });
+      } else if (c.k === "bin") {
+        walk(c.l, depth + 1, "");
+        walk(c.r, depth + 1, OP_LABEL[c.op] || c.op);
+      } else if (c.k === "fn") {
+        var names = ARG_NAMES[c.name] || [];
+        c.args.forEach(function (arg, i) { if (arg.k !== "missing") walk(arg, depth + 1, names[i] || ""); });
+      } else if (c.k === "unary") {
+        walk(c.x, depth + 1, c.op === "-" ? "−" : "+");
+      } else if (c.k === "pct") {
+        walk(c.x, depth + 1, "%");
+      }
+    }
+    walk(root, 0, "");
+    return rows;
+  }
+
+  function renderBreakdown() {
+    var ex = S.explore;
+    var out = document.getElementById(ex.box + "Tree");
+    if (!out) return;
+    if (!ex.root) {
+      out.innerHTML = '<div class="empty">This formula is too complex to break down here.</div>';
+      return;
+    }
+    var rows = treeRows(ex.root, ex), html = "", unknown = 0;
+    rows.forEach(function (r) {
+      var c = r.core, n = r.node, body, val = n.val;
+      if (c.k === "ref") {
+        var it = ex.items[c.ref];
+        var color = ex.colorOf[ex.refs[c.ref].start];
+        body = '<span class="sw" style="background:' + (color || "#999") + '"></span><b>' + esc(ex.refs[c.ref].text) + "</b>" +
+          (it && it.name ? ' <span class="nm">' + esc(it.name) + "</span>" : "");
+      } else if (c.k === "num") {
+        body = esc(String(c.v)) + (c.v !== 0 && c.v !== 1 ? ' <span class="hc">typed-in</span>' : "");
+      } else if (c.k === "str" || c.k === "bool" || c.k === "err") {
+        body = esc(ex.a.formula.slice(c.s, c.e));
+      } else {
+        var t = ex.a.formula.slice(n.s, n.e);
+        body = t.length > 80 ? esc(t.slice(0, 77)) + "…" : sliceHtml(ex.a.formula, ex.refs, n.s, n.e, ex.colorOf);
+      }
+      if (val === undefined && c.k !== "unk") unknown++;
+      var shown = (c.k === "num" || c.k === "str" || c.k === "bool") ? "" : fmtVal(val);
+      if (FK.isRange(val)) shown = val.range.length + "×" + val.range[0].length;
+      html += '<div class="tn' + (r.depth === 0 ? " root" : "") + '" style="padding-left:' + (Math.min(r.depth, 8) * 14 + 4) + 'px">' +
+        (r.tag ? '<span class="op">' + esc(r.tag) + "</span>" : "") +
+        '<span class="tx">' + body + '</span><span class="tv' + (FK.isErr(val) ? " bad" : "") + '">' + esc(shown) + "</span></div>";
+    });
+    if (unknown) {
+      html += '<div class="row" style="margin-top:8px"><button class="btn" id="' + ex.box + 'Calc">Fill in the "?" values using Excel</button></div>' +
+        '<p class="note">Uses a temporary hidden sheet, which clears Excel\'s Undo history.</p>';
+    }
+    out.innerHTML = html;
+    var b = document.getElementById(ex.box + "Calc");
+    if (b) b.addEventListener("click", guard(fillUnknown));
+  }
+
+  async function fillUnknown() {
+    var ex = S.explore;
+    var nodes = treeRows(ex.root, ex).map(function (r) { return r.node; })
+      .filter(function (n) { return n.val === undefined && n.k !== "unk" && n.k !== "missing"; }).slice(0, 40);
+    if (!nodes.length) return;
     await Excel.run(async function (ctx) {
       var tmp = ctx.workbook.worksheets.add("FK_tmp_" + Math.floor(Math.random() * 1e6));
       tmp.visibility = Excel.SheetVisibility.hidden;
       try {
-        var cells = parts.map(function (p, i) {
-          var c = tmp.getRange("A" + (i * 2000 + 1));
-          c.formulas = [["=" + p.text]];
+        var cells = nodes.map(function (n, i) {
+          var c = tmp.getRange("A" + (i * 1000 + 1));
+          c.formulas = [["=" + FK.qualifySlice(ex.a.formula, ex.refs, n.s, n.e, ex.a.sheet)]];
           c.load("values,valueTypes");
           return c;
         });
         await ctx.sync();
-        results = cells.map(function (c) { return fmtValue(c.values[0][0], c.valueTypes[0][0], ""); });
+        nodes.forEach(function (n, i) {
+          var v = cells[i].values[0][0], t = cells[i].valueTypes[0][0];
+          n.val = t === "Error" ? { err: String(v) } : t === "Empty" ? 0 : v;
+        });
       } finally {
         tmp.delete();
         await ctx.sync();
       }
     });
+    renderBreakdown();
+  }
 
-    var html = '<div class="label">Function results</div>';
-    parts.forEach(function (p, i) {
-      var t = p.text.split(prefix).join("").replace(/_xlfn\./gi, "");
-      if (t.length > 70) t = t.slice(0, 67) + "…";
-      html += '<div class="step" style="padding-left:' + (p.depth * 12) + 'px"><span>' + esc(t) +
-        '</span><span class="r">' + esc(results[i]) + "</span></div>";
+  async function analyze(box) {
+    showTab(box === "trace" ? "trace" : "explore");
+    await showPane();
+    await Excel.run(async function (ctx) {
+      var a = await getActive(ctx);
+      var outEl = $(box + "Out");
+      await loadLabels(ctx, [a]);
+      var aName = nameFor(a, { sheet: "", addr: "A1" });
+      var head = '<div class="title">' + esc(label(a.sheet, a.addr, "")) + "</div>" +
+        (aName ? '<div class="sub">' + esc(aName) + "</div>" : "") +
+        '<div class="big">' + esc(fmtValue(a.value, a.type, a.text)) + "</div>";
+      if (a.formula.charAt(0) !== "=") {
+        outEl.innerHTML = head + '<div class="empty">This cell has no formula — it\'s a typed-in value.</div>';
+        S.list = [];
+        return;
+      }
+      var refs = FK.findRefs(a.formula);
+      var items = await resolveRefs(ctx, a, refs);
+      var uniq = [], byKey = {};
+      items.forEach(function (it) {
+        if (!it) return;
+        var key = (it.sheet + "!" + it.addr).toUpperCase();
+        if (!byKey[key]) { byKey[key] = it; uniq.push(it); }
+      });
+      await loadLabels(ctx, uniq);
+
+      var colorOf = {}, keyColor = {}, words = {}, list = [];
+      items.forEach(function (it, i) {
+        if (!it) return;
+        var key = (it.sheet + "!" + it.addr).toUpperCase(), src = byKey[key];
+        it.rowLabel = src.rowLabel; it.colHeader = src.colHeader;
+        it.name = nameFor(it, a);
+        if (!keyColor[key]) {
+          keyColor[key] = COLORS[Object.keys(keyColor).length % COLORS.length];
+          list.push({ sheet: it.sheet, addr: it.addr, label: label(it.sheet, it.addr, a.sheet), name: it.name, value: it.display, color: keyColor[key] });
+        }
+        colorOf[refs[i].start] = keyColor[key];
+        words[refs[i].start] = it.name || refs[i].text;
+      });
+
+      var root = FK.parseFormula(a.formula, refs);
+      if (root) {
+        FK.evalTree(root, function (i) {
+          var it = items[i];
+          if (!it) return undefined;
+          if (it.cellCount === 1) {
+            if (it.type === "Empty") return 0;
+            if (it.type === "Error") return { err: String(it.value) };
+            return it.value;
+          }
+          return it.values ? { range: it.values } : undefined;
+        });
+      }
+      S.explore = { a: a, refs: refs, items: items, root: root, colorOf: colorOf, box: box };
+
+      var html = head +
+        '<div class="label">Formula</div><div class="code">' + sliceHtml(a.formula, refs, 0, a.formula.length, colorOf) + "</div>" +
+        '<div class="label">In words</div><div class="words">' + wordsHtml(a.formula, refs, colorOf, words) + "</div>" +
+        '<div class="label">Step by step</div><div class="tree" id="' + box + 'Tree"></div>' +
+        '<div class="label">Inputs — click to jump, ⌘⌥J for next, ⌘⌥B to come back</div>';
+      outEl.innerHTML = html + '<div id="' + box + 'List"></div>';
+      renderBreakdown();
+
+      S.list = list;
+      S.listBox = box + "List";
+      S.idx = -1;
+      S.originPushed = false;
+      var lst = $(box + "List");
+      lst.innerHTML = list.length ? listHtml(list) : '<div class="empty">No inputs in this workbook (links to other files are skipped).</div>';
+      bindList(lst);
     });
-    html += '<p class="note">Calculated on a temporary hidden sheet, which clears Excel\'s Undo history.</p>';
-    $("partsOut").innerHTML = html;
+  }
+
+  async function explore() {
+    await analyze("explore");
   }
 
   // ------------------------------------------------------------------ Model map

@@ -59,6 +59,20 @@
     .keys td { padding: 3px 6px; border-top: 1px solid var(--line); }
     kbd { font-family: var(--mono); font-size: 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
     .note { color: var(--muted); font-size: 12px; }
+    .item .a { min-width: 0; }
+    .nm { display: block; font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 11.5px; color: var(--muted); margin-left: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tn .nm { display: inline; margin-left: 4px; }
+    .words { font-size: 13px; line-height: 1.9; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; word-break: break-word; }
+    .w { border: 1px solid; border-radius: 4px; padding: 0 4px; font-weight: 600; white-space: nowrap; }
+    .tree { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+    .tn { display: flex; align-items: baseline; gap: 6px; padding: 4px 4px 4px 0; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px; }
+    .tn:first-child { border-top: 0; }
+    .tn.root { font-weight: 600; }
+    .tn .op { color: var(--muted); min-width: 14px; font-family: -apple-system, system-ui, sans-serif; font-size: 11px; }
+    .tn .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tn .tv { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .tn .tv.bad { color: var(--err); }
+    .hc { font-family: -apple-system, system-ui, sans-serif; font-size: 10.5px; color: #b26a00; border: 1px solid #e6b866; border-radius: 3px; padding: 0 3px; }
   </style>
 </head>
 <body>
@@ -86,7 +100,7 @@
 
     <section id="tab-explore">
       <div class="row"><button class="btn primary" id="bExplore">Explore active cell</button></div>
-      <div id="exploreOut"><div class="empty">Shows the formula, the same formula with values, and each input.</div></div>
+      <div id="exploreOut"><div class="empty">Select a cell and press Explore (⌘⌥E) to see what each input is and how the formula is built.</div></div>
     </section>
 
     <section id="tab-map">

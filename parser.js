@@ -319,7 +319,381 @@
     return { codes: codes, counts: counts };
   }
 
+  // ---------------------------------------------------------------- expression tree
+
+  var PREC = { "=": 1, "<>": 1, "<": 1, ">": 1, "<=": 1, ">=": 1, "&": 2, "+": 3, "-": 3, "*": 4, "/": 4, "^": 5 };
+
+  function lexFormula(f, refs) {
+    var byStart = {}, toks = [], n = f.length, i = f.charAt(0) === "=" ? 1 : 0, m, j;
+    refs.forEach(function (r, k) { byStart[r.start] = k; });
+    while (i < n) {
+      var ch = f[i], rest = f.slice(i);
+      if (/\s/.test(ch)) { i++; continue; }
+      if (byStart[i] !== undefined) {
+        var r = refs[byStart[i]];
+        toks.push({ t: "ref", ref: byStart[i], s: i, e: r.end });
+        i = r.end;
+        continue;
+      }
+      if (ch === '"') {
+        j = skipQuoted(f, i, '"');
+        toks.push({ t: "str", v: f.slice(i + 1, j - 1).replace(/""/g, '"'), s: i, e: j });
+        i = j;
+        continue;
+      }
+      if ((m = /^(\d+\.?\d*|\.\d+)(E[+-]?\d+)?/i.exec(rest))) {
+        toks.push({ t: "num", v: parseFloat(m[0]), s: i, e: i + m[0].length });
+        i += m[0].length;
+        continue;
+      }
+      if ((m = /^#(N\/A|DIV\/0!|REF!|VALUE!|NAME\?|NUM!|NULL!|SPILL!|CALC!)/i.exec(rest))) {
+        toks.push({ t: "err", v: m[0].toUpperCase(), s: i, e: i + m[0].length });
+        i += m[0].length;
+        continue;
+      }
+      if ((m = /^([A-Za-z_][\w.]*)\s*\(/.exec(rest))) {
+        toks.push({ t: "fn", name: m[1].replace(/^_xl(fn|ws)\./i, "").toUpperCase(), s: i, e: i + m[0].length });
+        i += m[0].length;
+        continue;
+      }
+      if ((m = /^(TRUE|FALSE)(?![\w.(])/i.exec(rest))) {
+        toks.push({ t: "bool", v: m[1].toUpperCase() === "TRUE", s: i, e: i + m[0].length });
+        i += m[0].length;
+        continue;
+      }
+      if ((m = /^(<=|>=|<>)/.exec(rest))) {
+        toks.push({ t: "op", v: m[0], s: i, e: i + 2 });
+        i += 2;
+        continue;
+      }
+      if ("+-*/^&=<>%,()".indexOf(ch) >= 0) {
+        toks.push({ t: "op", v: ch, s: i, e: i + 1 });
+        i++;
+        continue;
+      }
+      if (ch === "{") {
+        j = f.indexOf("}", i);
+        j = j < 0 ? n : j + 1;
+        toks.push({ t: "unk", s: i, e: j });
+        i = j;
+        continue;
+      }
+      // unresolved name / external link / anything else
+      j = i;
+      if (ch === "'") j = skipQuoted(f, i, "'");
+      while (j < n && (isRefChar(f[j]) || f[j] === "[" || f[j] === "]" || f[j] === "#")) j++;
+      if (j === i) j = i + 1;
+      toks.push({ t: "unk", s: i, e: j });
+      i = j;
+    }
+    return toks;
+  }
+
+  // Parse an A1 formula into a tree. Nodes: {k, s, e, ...}. Returns null if it can't parse.
+  function parseFormula(formula, refs) {
+    var f = String(formula), toks, p = 0;
+    try { toks = lexFormula(f, refs); } catch (e) { return null; }
+    function peek() { return toks[p]; }
+    function isOp(t, v) { return !!t && t.t === "op" && t.v === v; }
+
+    function primary() {
+      var t = toks[p++], node;
+      if (!t) throw new Error("end");
+      if (t.t === "num" || t.t === "str" || t.t === "bool" || t.t === "err") node = { k: t.t, v: t.v, s: t.s, e: t.e };
+      else if (t.t === "ref") node = { k: "ref", ref: t.ref, s: t.s, e: t.e };
+      else if (t.t === "unk") node = { k: "unk", s: t.s, e: t.e };
+      else if (t.t === "fn") {
+        var args = [];
+        if (isOp(peek(), ")")) p++;
+        else {
+          for (;;) {
+            var nx = peek();
+            if (!nx) throw new Error("end");
+            if (isOp(nx, ",") || isOp(nx, ")")) args.push({ k: "missing", s: nx.s, e: nx.s });
+            else args.push(expr(0));
+            if (isOp(peek(), ",")) { p++; continue; }
+            if (isOp(peek(), ")")) { p++; break; }
+            throw new Error("bad args");
+          }
+        }
+        node = { k: "fn", name: t.name, args: args, s: t.s, e: toks[p - 1].e };
+      } else if (isOp(t, "(")) {
+        var inner = expr(0);
+        if (!isOp(peek(), ")")) throw new Error("no )");
+        p++;
+        node = { k: "paren", x: inner, s: t.s, e: toks[p - 1].e };
+      } else if (isOp(t, "-") || isOp(t, "+")) {
+        var x = expr(6);
+        node = { k: "unary", op: t.v, x: x, s: t.s, e: x.e };
+      } else throw new Error("unexpected");
+      while (isOp(peek(), "%")) {
+        var q = toks[p++];
+        node = { k: "pct", x: node, s: node.s, e: q.e };
+      }
+      return node;
+    }
+
+    function expr(minPrec) {
+      var left = primary();
+      for (;;) {
+        var t = peek();
+        if (!t || t.t !== "op" || !(t.v in PREC) || PREC[t.v] < minPrec) break;
+        p++;
+        var right = expr(PREC[t.v] + 1);
+        left = { k: "bin", op: t.v, l: left, r: right, s: left.s, e: right.e };
+      }
+      return left;
+    }
+
+    try {
+      var root = expr(0);
+      if (p < toks.length) return null;
+      return root;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ---- evaluation (values: number | string | boolean | {err} | {range: 2D} | undefined = unknown)
+
+  function isErr(v) { return !!v && typeof v === "object" && "err" in v; }
+  function isRange(v) { return !!v && typeof v === "object" && "range" in v; }
+  function E(code) { return { err: code }; }
+
+  function scalar(v) {
+    if (isRange(v)) {
+      var g = v.range;
+      return g.length === 1 && g[0].length === 1 ? (g[0][0] === "" ? 0 : g[0][0]) : undefined;
+    }
+    return v;
+  }
+
+  function toNum(v) {
+    v = scalar(v);
+    if (v === undefined || isErr(v)) return v;
+    if (v && v.missing) return 0;
+    if (typeof v === "number") return v;
+    if (typeof v === "boolean") return v ? 1 : 0;
+    var s = String(v).trim();
+    if (s !== "" && !isNaN(+s)) return +s;
+    return E("#VALUE!");
+  }
+
+  function toStr(v) {
+    v = scalar(v);
+    if (v === undefined || isErr(v)) return v;
+    if (v && v.missing) return "";
+    if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+    if (typeof v === "number") return String(Math.round(v * 1e10) / 1e10);
+    return String(v);
+  }
+
+  function toBool(v) {
+    v = scalar(v);
+    if (v === undefined || isErr(v)) return v;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    var s = String(v).toUpperCase();
+    if (s === "TRUE") return true;
+    if (s === "FALSE") return false;
+    return E("#VALUE!");
+  }
+
+  function rank(v) { return typeof v === "number" ? 0 : typeof v === "string" ? 1 : 2; }
+
+  function compare(op, a, b) {
+    a = scalar(a); b = scalar(b);
+    if (a === undefined || b === undefined) return undefined;
+    if (isErr(a)) return a;
+    if (isErr(b)) return b;
+    var c;
+    if (rank(a) !== rank(b)) c = rank(a) - rank(b);
+    else if (typeof a === "string") { var x = a.toLowerCase(), y = b.toLowerCase(); c = x < y ? -1 : x > y ? 1 : 0; }
+    else c = (a === b) ? 0 : (a < b ? -1 : 1);
+    switch (op) {
+      case "=": return c === 0;
+      case "<>": return c !== 0;
+      case "<": return c < 0;
+      case ">": return c > 0;
+      case "<=": return c <= 0;
+      default: return c >= 0;
+    }
+  }
+
+  function binop(op, l, r) {
+    if (op === "&") {
+      var s1 = toStr(l), s2 = toStr(r);
+      if (s1 === undefined || s2 === undefined) return undefined;
+      if (isErr(s1)) return s1;
+      if (isErr(s2)) return s2;
+      return s1 + s2;
+    }
+    if (PREC[op] === 1) return compare(op, l, r);
+    var a = toNum(l), b = toNum(r);
+    if (a === undefined || b === undefined) return undefined;
+    if (isErr(a)) return a;
+    if (isErr(b)) return b;
+    switch (op) {
+      case "+": return a + b;
+      case "-": return a - b;
+      case "*": return a * b;
+      case "/": return b === 0 ? E("#DIV/0!") : a / b;
+      case "^": var pw = Math.pow(a, b); return isFinite(pw) ? pw : E("#NUM!");
+    }
+    return undefined;
+  }
+
+  // Numbers from arguments: ranges contribute only their numbers; direct values are coerced.
+  function nums(args) {
+    var out = [];
+    for (var i = 0; i < args.length; i++) {
+      var v = args[i];
+      if (v === undefined) return undefined;
+      if (isErr(v)) return v;
+      if (v && v.missing) continue;
+      if (isRange(v)) {
+        for (var r = 0; r < v.range.length; r++) {
+          for (var c = 0; c < v.range[r].length; c++) {
+            var x = v.range[r][c];
+            if (typeof x === "number") out.push(x);
+            else if (typeof x === "string" && /^#/.test(x)) return E(x);
+          }
+        }
+      } else {
+        var n = toNum(v);
+        if (isErr(n)) return n;
+        out.push(n);
+      }
+    }
+    return out;
+  }
+
+  function roundX(x, d, mode) {
+    var f = Math.pow(10, d), y = Math.abs(x) * f, s = x < 0 ? -1 : 1;
+    y = +y.toPrecision(15);
+    var r = mode === "up" ? Math.ceil(y) : mode === "down" ? Math.floor(y) : Math.round(y);
+    return s * r / f;
+  }
+
+  function flatRange(v) {
+    if (isRange(v)) return [].concat.apply([], v.range);
+    return [scalar(v)];
+  }
+
+  function callFn(name, a) {
+    var ns, x, i;
+    switch (name) {
+      case "SUM": ns = nums(a); if (!Array.isArray(ns)) return ns; return ns.reduce(function (s, v) { return s + v; }, 0);
+      case "PRODUCT": ns = nums(a); if (!Array.isArray(ns)) return ns; return ns.reduce(function (s, v) { return s * v; }, 1);
+      case "AVERAGE": ns = nums(a); if (!Array.isArray(ns)) return ns; return ns.length ? ns.reduce(function (s, v) { return s + v; }, 0) / ns.length : E("#DIV/0!");
+      case "MIN": ns = nums(a); if (!Array.isArray(ns)) return ns; return ns.length ? Math.min.apply(null, ns) : 0;
+      case "MAX": ns = nums(a); if (!Array.isArray(ns)) return ns; return ns.length ? Math.max.apply(null, ns) : 0;
+      case "COUNT": ns = nums(a); if (!Array.isArray(ns)) return ns; return ns.length;
+      case "ABS": x = toNum(a[0]); return typeof x === "number" ? Math.abs(x) : x;
+      case "INT": x = toNum(a[0]); return typeof x === "number" ? Math.floor(x) : x;
+      case "SQRT": x = toNum(a[0]); return typeof x === "number" ? (x < 0 ? E("#NUM!") : Math.sqrt(x)) : x;
+      case "ROUND": case "ROUNDUP": case "ROUNDDOWN":
+        x = toNum(a[0]); var d = a.length > 1 ? toNum(a[1]) : 0;
+        if (typeof x !== "number") return x;
+        if (typeof d !== "number") return d;
+        return roundX(x, Math.trunc(d), name === "ROUNDUP" ? "up" : name === "ROUNDDOWN" ? "down" : "");
+      case "POWER": return binop("^", a[0], a[1]);
+      case "MOD":
+        x = toNum(a[0]); var m = toNum(a[1]);
+        if (typeof x !== "number") return x;
+        if (typeof m !== "number") return m;
+        return m === 0 ? E("#DIV/0!") : x - m * Math.floor(x / m);
+      case "IF":
+        var c = toBool(a[0]);
+        if (c === undefined || isErr(c)) return c;
+        if (c) return a.length > 1 && !(a[1] && a[1].missing) ? scalar(a[1]) : (a.length > 1 ? 0 : true);
+        return a.length > 2 && !(a[2] && a[2].missing) ? scalar(a[2]) : (a.length > 2 ? 0 : false);
+      case "IFERROR":
+        if (a[0] === undefined) return undefined;
+        return isErr(scalar(a[0])) ? scalar(a[1]) : scalar(a[0]);
+      case "AND": case "OR":
+        var vals = [];
+        for (i = 0; i < a.length; i++) {
+          var parts = flatRange(a[i]);
+          for (var k = 0; k < parts.length; k++) {
+            var b = parts[k];
+            if (b === undefined) return undefined;
+            if (isErr(b)) return b;
+            if (b === "" ) continue;
+            b = toBool(b);
+            if (isErr(b)) return b;
+            vals.push(b);
+          }
+        }
+        return name === "AND" ? vals.every(Boolean) : vals.some(Boolean);
+      case "NOT": x = toBool(a[0]); return typeof x === "boolean" ? !x : x;
+      case "SUMPRODUCT":
+        if (!a.length) return undefined;
+        var arrs = [];
+        for (i = 0; i < a.length; i++) {
+          if (a[i] === undefined) return undefined;
+          arrs.push(flatRange(a[i]));
+        }
+        var len = arrs[0].length, tot = 0;
+        for (i = 0; i < arrs.length; i++) if (arrs[i].length !== len) return E("#VALUE!");
+        for (var j = 0; j < len; j++) {
+          var prod = 1;
+          for (i = 0; i < arrs.length; i++) prod *= typeof arrs[i][j] === "number" ? arrs[i][j] : 0;
+          tot += prod;
+        }
+        return tot;
+    }
+    return undefined;
+  }
+
+  // Evaluates every node (sets node.val). getRef(i) returns the value for refs[i].
+  function evalTree(node, getRef) {
+    var v, i;
+    switch (node.k) {
+      case "num": case "str": case "bool": v = node.v; break;
+      case "err": v = E(node.v); break;
+      case "missing": v = { missing: true }; break;
+      case "unk": v = undefined; break;
+      case "ref": v = getRef(node.ref); break;
+      case "paren": v = evalTree(node.x, getRef); break;
+      case "unary":
+        var x = toNum(evalTree(node.x, getRef));
+        v = typeof x === "number" ? (node.op === "-" ? -x : x) : x;
+        break;
+      case "pct":
+        var y = toNum(evalTree(node.x, getRef));
+        v = typeof y === "number" ? y / 100 : y;
+        break;
+      case "bin":
+        v = binop(node.op, evalTree(node.l, getRef), evalTree(node.r, getRef));
+        break;
+      case "fn":
+        var args = [];
+        for (i = 0; i < node.args.length; i++) args.push(evalTree(node.args[i], getRef));
+        v = callFn(node.name, args);
+        break;
+    }
+    node.val = v;
+    return v;
+  }
+
+  // Prefix unqualified addresses inside f.slice(s, e) with the home sheet.
+  function qualifySlice(f, refs, s, e, homeSheet) {
+    var out = "", pos = s;
+    refs.forEach(function (r) {
+      if (r.start >= s && r.end <= e) {
+        out += f.slice(pos, r.start);
+        if (r.kind === "address" && !r.sheet) out += quoteSheet(homeSheet) + "!";
+        out += f.slice(r.start, r.end);
+        pos = r.end;
+      }
+    });
+    return out + f.slice(pos, e);
+  }
+
   var api = {
+    parseFormula: parseFormula, evalTree: evalTree, qualifySlice: qualifySlice,
+    isErr: isErr, isRange: isRange, PREC: PREC,
     findRefs: findRefs, functionParts: functionParts, qualify: qualify,
     parseA1: parseA1, overlaps: overlaps, colToNum: colToNum, numToCol: numToCol,
     quoteSheet: quoteSheet, unquoteSheet: unquoteSheet,
