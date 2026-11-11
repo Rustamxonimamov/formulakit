@@ -280,10 +280,6 @@
     }
   }
 
-  async function tracePrecedents() {
-    await analyze();
-  }
-
   async function scanDependents(ctx, a) {
     var wb = ctx.workbook;
     var sheets = wb.worksheets;
@@ -344,51 +340,239 @@
     return hits;
   }
 
-  async function traceDependents() {
+  // ------------------------------------------------------------------ Trace tree (Arixcel-style)
+  //
+  // One tree of cells. Root = selected cell. Children = the cells its formula uses
+  // (or, in dependents mode, the cells that use it). ▸ opens the next level.
+  // Selecting a row selects that cell in the sheet straight away.
+
+  var T = { root: null, mode: "prec", cursor: null, rows: [], originPushed: false };
+
+  function cleanAddr(a) { return String(a).replace(/\$/g, ""); }
+
+  function mkNode(sheet, addr, parent) {
+    return { sheet: sheet, addr: cleanAddr(addr), parent: parent || null, depth: parent ? parent.depth + 1 : 0,
+             formula: "", text: "", multi: false, cells: 1, kids: null, open: false, err: false };
+  }
+
+  // Load formula + displayed value for each node.
+  async function fillInfo(ctx, nodes) {
+    var rs = nodes.map(function (n) {
+      var r = ctx.workbook.worksheets.getItem(n.sheet).getRange(n.addr);
+      r.load("cellCount");
+      var c0 = r.getCell(0, 0);
+      c0.load("formulas,text,values,valueTypes");
+      return { r: r, c0: c0 };
+    });
+    await ctx.sync();
+    var sums = [];
+    nodes.forEach(function (n, i) {
+      var x = rs[i];
+      n.cells = x.r.cellCount;
+      n.multi = n.cells > 1;
+      if (!n.multi) {
+        var f = x.c0.formulas[0][0];
+        n.formula = typeof f === "string" && f.charAt(0) === "=" ? f : "";
+        n.err = x.c0.valueTypes[0][0] === "Error";
+        n.text = fmtValue(x.c0.values[0][0], x.c0.valueTypes[0][0], x.c0.text[0][0]);
+      } else if (n.cells <= 5000) {
+        x.r.load("values");
+        sums.push(n);
+        n._r = x.r;
+      } else {
+        n.text = n.cells.toLocaleString() + " cells";
+      }
+    });
+    if (sums.length) {
+      await ctx.sync();
+      sums.forEach(function (n) {
+        var s = 0;
+        n._r.values.forEach(function (row) { row.forEach(function (v) { if (typeof v === "number") s += v; }); });
+        n.text = "Σ " + fmtNum(s);
+        delete n._r;
+      });
+    }
+  }
+
+  function canOpen(n) {
+    if (T.mode === "dep") return !n.multi;
+    return n.multi ? n.cells <= 500 : !!n.formula;
+  }
+
+  // Children of a node, loaded on first open.
+  async function loadKids(n) {
+    await Excel.run(async function (ctx) {
+      var kids = [];
+      var b = FK.parseA1(n.addr);
+      if (n.multi) {
+        for (var r = b.r1; r <= b.r2 && kids.length < 500; r++)
+          for (var c = b.c1; c <= b.c2 && kids.length < 500; c++) kids.push(mkNode(n.sheet, FK.numToCol(c) + r, n));
+      } else if (T.mode === "prec") {
+        var refs = FK.findRefs(n.formula);
+        var items = await resolveRefs(ctx, { sheet: n.sheet, addr: n.addr, row: b.r1 }, refs);
+        var seen = {};
+        items.forEach(function (it) {
+          if (!it) return;
+          var key = (it.sheet + "!" + it.addr).toUpperCase();
+          if (seen[key]) return;
+          seen[key] = true;
+          kids.push(mkNode(it.sheet, it.addr, n));
+        });
+      } else {
+        var list = null;
+        try {
+          var deps = ctx.workbook.worksheets.getItem(n.sheet).getRange(n.addr).getDirectDependents();
+          deps.load("addresses");
+          await ctx.sync();
+          list = [];
+          deps.addresses.forEach(function (s) {
+            FK.splitAddressList(s).forEach(function (full) {
+              var p = FK.splitSheetAddress(full);
+              list.push({ sheet: p.sheet || n.sheet, addr: p.addr });
+            });
+          });
+        } catch (e) {
+          list = (e && e.code === "ItemNotFound") ? [] : null;
+        }
+        if (list === null) list = await scanDependents(ctx, { sheet: n.sheet, row: b.r1, col: b.c1 });
+        list.slice(0, 300).forEach(function (x) { kids.push(mkNode(x.sheet, x.addr, n)); });
+      }
+      if (kids.length) await fillInfo(ctx, kids);
+      n.kids = kids;
+    });
+  }
+
+  function visibleRows() {
+    var out = [];
+    (function walk(n) {
+      out.push(n);
+      if (n.open && n.kids) n.kids.forEach(walk);
+    })(T.root);
+    return out;
+  }
+
+  function cellName(n) {
+    return (n.sheet !== T.root.sheet ? n.sheet + "!" : "") + n.addr;
+  }
+
+  // Formula with each reference coloured to match its row below.
+  function formulaHtml(n) {
+    var f = n.formula, refs = FK.findRefs(f), html = "", pos = 0, map = {};
+    (n.kids || []).forEach(function (k, i) { map[(k.sheet + "!" + k.addr).toUpperCase()] = COLORS[i % COLORS.length]; });
+    refs.forEach(function (r) {
+      html += esc(f.slice(pos, r.start));
+      var sh = r.sheet || n.sheet, key = (sh + "!" + (r.addr || "")).toUpperCase();
+      var c = map[key];
+      html += c ? '<b style="color:' + c + '">' + esc(r.text) + "</b>" : esc(r.text);
+      pos = r.end;
+    });
+    return html + esc(f.slice(pos));
+  }
+
+  function renderTree() {
+    var rows = visibleRows();
+    T.rows = rows;
+    var root = T.root;
+    var fb = T.cursor || root;
+    var html = '<div class="fbar"><span class="fx">fx</span><span class="ftxt"><span class="muted">' + esc(cellName(fb)) + "</span>&nbsp; " +
+      (fb.formula ? formulaHtml(fb) : fb.multi ? esc(fb.cells + " cells · " + fb.text) : esc(fb.text) + ' <span class="muted">(typed-in value)</span>') + "</span></div>" +
+      '<div class="tgrid" id="tgrid" tabindex="0"><div class="thead"><span>' + (T.mode === "prec" ? "Precedents" : "Dependents") +
+      '</span><span>Value</span></div>';
+    rows.forEach(function (n, i) {
+      var kidsColor = "";
+      if (n.parent && n.parent === root) kidsColor = COLORS[root.kids.indexOf(n) % COLORS.length];
+      var tog = canOpen(n) ? (n.open ? "▾" : "▸") : "";
+      var what = n.multi ? (n.cells + " cells") : n.formula ? n.formula : "";
+      html += '<div class="trow' + (n === T.cursor ? " cur" : "") + (n === root ? " rootrow" : "") + '" data-i="' + i + '" style="--d:' + Math.min(n.depth, 10) + '">' +
+        '<span class="tg" data-i="' + i + '">' + tog + "</span>" +
+        (kidsColor ? '<span class="dot" style="background:' + kidsColor + '"></span>' : '<span class="dot"></span>') +
+        '<span class="ca">' + esc(cellName(n)) + "</span>" +
+        '<span class="cf" title="' + esc(what) + '">' + esc(what) + "</span>" +
+        '<span class="cv' + (n.err ? " bad" : "") + '">' + esc(n.text) + "</span></div>";
+    });
+    html += "</div>";
+    if (root.kids && !root.kids.length) {
+      html += '<div class="empty pad">' + (T.mode === "prec" ? "No cell references in this formula (links to other files are skipped)." : "No formulas in this workbook use this cell.") + "</div>";
+    }
+    html += '<div class="keyhelp">↑↓ move &nbsp;·&nbsp; → open &nbsp;·&nbsp; ← close &nbsp;·&nbsp; Esc back to start</div>';
+    $("traceOut").innerHTML = html;
+
+    var grid = $("tgrid");
+    grid.addEventListener("keydown", onTreeKey);
+    var trs = grid.querySelectorAll(".trow");
+    for (var i = 0; i < trs.length; i++) {
+      trs[i].addEventListener("click", function (ev) {
+        var idx = +ev.currentTarget.getAttribute("data-i");
+        if (ev.target.classList.contains("tg")) { guard(toggle)(T.rows[idx]); return; }
+        guard(selectRow)(T.rows[idx]);
+      });
+    }
+    var cur = grid.querySelector(".trow.cur");
+    if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+  }
+
+  async function toggle(n) {
+    if (!canOpen(n)) return;
+    if (!n.open && !n.kids) { status("Loading…"); await loadKids(n); status(""); }
+    n.open = !n.open;
+    renderTree();
+    focusTree();
+  }
+
+  function focusTree() {
+    var g = $("tgrid");
+    if (g) { try { g.focus({ preventScroll: true }); } catch (e) { g.focus(); } }
+  }
+
+  async function selectRow(n) {
+    T.cursor = n;
+    renderTree();
+    focusTree();
+    await navigate({ sheet: n.sheet, addr: n.addr }, !T.originPushed);
+    T.originPushed = true;
+  }
+
+  function onTreeKey(ev) {
+    var rows = T.rows, i = rows.indexOf(T.cursor), n = T.cursor;
+    if (ev.key === "ArrowDown") { if (i < rows.length - 1) guard(selectRow)(rows[i + 1]); }
+    else if (ev.key === "ArrowUp") { if (i > 0) guard(selectRow)(rows[i - 1]); }
+    else if (ev.key === "ArrowRight") {
+      if (n && canOpen(n) && !n.open) guard(toggle)(n);
+      else if (n && n.open && n.kids && n.kids.length) guard(selectRow)(n.kids[0]);
+    } else if (ev.key === "ArrowLeft") {
+      if (n && n.open) guard(toggle)(n);
+      else if (n && n.parent) guard(selectRow)(n.parent);
+    } else if (ev.key === "Enter") { if (n) guard(selectRow)(n); }
+    else if (ev.key === "Escape") { guard(goBack)(); }
+    else return;
+    ev.preventDefault();
+  }
+
+  async function startTree(mode) {
     showTab("trace");
     await showPane();
     await Excel.run(async function (ctx) {
       var a = await getActive(ctx);
-      var list = null;
-      try {
-        var deps = a.range.getDirectDependents();
-        deps.load("addresses");
-        await ctx.sync();
-        list = [];
-        deps.addresses.forEach(function (s) {
-          FK.splitAddressList(s).forEach(function (full) {
-            var p = FK.splitSheetAddress(full);
-            list.push({ sheet: p.sheet || a.sheet, addr: p.addr });
-          });
-        });
-      } catch (e) {
-        list = (e && e.code === "ItemNotFound") ? [] : null;
-      }
-      if (list === null) list = await scanDependents(ctx, a);
-
-      list = list.slice(0, 500);
-      var rngs = list.map(function (it) {
-        var r = ctx.workbook.worksheets.getItem(it.sheet).getRange(it.addr).getCell(0, 0);
-        r.load("text,values,valueTypes");
-        return r;
-      });
-      await ctx.sync();
-      list.forEach(function (it, i) {
-        it.value = fmtValue(rngs[i].values[0][0], rngs[i].valueTypes[0][0], rngs[i].text[0][0]);
-      });
-      await loadLabels(ctx, [a].concat(list.slice(0, 150)));
-      a.name = nameFor(a, null);
-      list.forEach(function (it) { it.name = nameFor(it, null); });
-      $("traceOut").innerHTML = cellCard(a) +
-        '<div class="sec"><span>Used by (' + list.length + ')</span><span class="hint">click to jump · ⌘⌥J next · ⌘⌥B back</span></div>' +
-        '<div id="fkList"></div>';
-      setList(sortBySheet(list, a.sheet), "fkList", a.sheet);
+      T.mode = mode;
+      T.root = mkNode(a.sheet, a.addr, null);
+      await fillInfo(ctx, [T.root]);
     });
+    T.cursor = T.root;
+    T.originPushed = false;
+    if (canOpen(T.root)) { await loadKids(T.root); T.root.open = true; }
+    else T.root.kids = [];
+    renderTree();
+    focusTree();
   }
 
+  async function tracePrecedents() { await startTree("prec"); }
+  async function traceDependents() { await startTree("dep"); }
+  async function explore() { await startTree("prec"); }
+
   async function jumpNext() {
-    if (!S.list.length) { await tracePrecedents(); return; }
-    await jumpTo(S.list, (S.idx + 1) % S.list.length);
+    if (!T.root) { await tracePrecedents(); return; }
+    var i = T.rows.indexOf(T.cursor);
+    await selectRow(T.rows[(i + 1) % T.rows.length]);
   }
 
   async function goBack() {
@@ -396,359 +580,8 @@
     if (!item) { status("Nothing to go back to."); return; }
     await navigate(item, false);
     S.originPushed = false;
-  }
-
-  // ------------------------------------------------------------------ Explorer (precedents + breakdown)
-
-  var LETTER = /[A-Za-zÀ-ɏЀ-ӿ]/;
-  var DATEISH = /^(19|20)\d{2}[A-Z]?$|^\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}$|^[A-Za-zЀ-ӿ]{3,9}[\s\-']\d{2,4}$|^(FY|Q[1-4]|H[12])/i;
-
-  function shorten(s, n) {
-    s = String(s).replace(/\s+/g, " ").trim();
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
-
-  // Row label = the text cells to the left of the cell (up to 3, joined),
-  // column header = nearest text or date-like cell above.
-  async function loadLabels(ctx, cells) {
-    var jobs = cells.map(function (c) {
-      var b = FK.parseA1(c.addr);
-      if (!b || !c.sheet) return null;
-      var ws = ctx.workbook.worksheets.getItem(c.sheet);
-      var j = { c: c, b: b, row: null, col: null };
-      if (b.c1 > 1) {
-        j.row = ws.getRangeByIndexes(b.r1 - 1, 0, 1, Math.min(b.c1 - 1, 30));
-        j.row.load("values,valueTypes");
-      }
-      if (b.r1 > 1) {
-        var top = Math.max(0, b.r1 - 1 - 40);
-        j.col = ws.getRangeByIndexes(top, b.c1 - 1, b.r1 - 1 - top, 1);
-        j.col.load("text,valueTypes");
-      }
-      return j;
-    });
-    await ctx.sync();
-    jobs.forEach(function (j) {
-      if (!j) return;
-      j.c.rowLabel = "";
-      j.c.colHeader = "";
-      if (j.row) {
-        var vals = j.row.values[0], types = j.row.valueTypes[0], texts = [];
-        for (var i = 0; i < vals.length; i++) {
-          var t = String(vals[i]).replace(/\s+/g, " ").trim();
-          if (types[i] === "String" && LETTER.test(t) && texts.indexOf(t) < 0) texts.push(shorten(t, 45));
-        }
-        if (texts.length > 3) texts = [texts[0]].concat(texts.slice(-2));
-        j.c.rowLabel = texts.join(" › ");
-      }
-      if (j.col) {
-        for (var r = j.col.text.length - 1; r >= 0; r--) {
-          var h = String(j.col.text[r][0]).trim(), ty = j.col.valueTypes[r][0];
-          if (!h) continue;
-          if ((ty === "String" && h.length <= 40) || ((ty === "Double" || ty === "Integer") && DATEISH.test(h))) {
-            j.c.colHeader = shorten(h, 25);
-            break;
-          }
-        }
-      }
-    });
-  }
-
-  function nameFor(it, home) {
-    var parts = [];
-    var rb = FK.parseA1(it.addr);
-    if (rb && rb.r2 > rb.r1) {
-      if (rb.c2 === rb.c1 && it.colHeader) parts.push(it.colHeader);
-      parts.push("rows " + rb.r1 + "–" + rb.r2);
-      return parts.join(" · ");
-    }
-    var b = FK.parseA1(it.addr), hb = home ? FK.parseA1(home.addr) : null;
-    var sameCol = b && hb && b.c1 === hb.c1 && it.sheet === home.sheet;
-    if (it.rowLabel) parts.push(it.rowLabel);
-    if (it.colHeader && (!sameCol || !it.rowLabel)) parts.push(it.colHeader);
-    return parts.join(" · ");
-  }
-
-  // Numbers for computed steps: sensible precision by size.
-  function fmtComp(v) {
-    if (v === undefined) return "?";
-    if (FK.isErr(v)) return v.err;
-    if (FK.isRange(v)) return v.range.length + "×" + v.range[0].length + " range";
-    if (v && v.missing) return "—";
-    if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
-    if (typeof v === "number") {
-      var a = Math.abs(v);
-      var d = a >= 1000 ? 0 : a >= 1 ? 2 : a === 0 ? 0 : 4;
-      return v.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
-    }
-    return '"' + shorten(v, 30) + '"';
-  }
-
-  function cleanAddr(a) { return String(a).replace(/\$/g, ""); }
-
-  // Compact expression: refs become coloured chips (address or label), * / become × ÷.
-  function exprHtml(ex, s, e, mode) {
-    var f = ex.a.formula, html = "", pos = s;
-    function plain(t) {
-      return esc(t).replace(/\*/g, " × ").replace(/\//g, " ÷ ").replace(/\+/g, " + ").replace(/,/g, ", ")
-        .replace(/_xl(fn|ws)\./gi, "").replace(/\s{2,}/g, " ");
-    }
-    ex.refs.forEach(function (r, i) {
-      if (r.start < s || r.end > e) return;
-      html += plain(f.slice(pos, r.start));
-      var it = ex.items[i], color = ex.colorOf[r.start] || "var(--muted)";
-      var addr = it ? cleanAddr(it.addr) : cleanAddr(r.text);
-      var other = it && it.sheet !== ex.a.sheet;
-      var txt = mode === "labels" && it && it.name ? it.name : (other ? it.sheet + "!" : "") + addr;
-      html += '<span class="rc" style="--c:' + color + '" title="' + esc((it ? it.sheet + "!" : "") + addr + (it && it.name ? " — " + it.name : "")) + '">' + esc(txt) + "</span>";
-      pos = r.end;
-    });
-    return html + plain(f.slice(pos, e));
-  }
-
-  var OP_LABEL = { "+": "+", "-": "−", "*": "×", "/": "÷", "^": "^", "&": "&", "=": "=", "<>": "≠", "<": "<", ">": ">", "<=": "≤", ">=": "≥" };
-  var ARG_NAMES = {
-    IF: ["if", "then", "else"], IFERROR: ["value", "if error"], ROUND: ["", "digits"], ROUNDUP: ["", "digits"],
-    ROUNDDOWN: ["", "digits"], VLOOKUP: ["look up", "in", "column", "exact?"], XLOOKUP: ["look up", "in", "return"],
-    INDEX: ["from", "row", "column"], MATCH: ["look up", "in", "type"], SUMIF: ["range", "criteria", "sum"],
-    SUMIFS: ["sum", "range", "criteria"], MIN: [], MAX: []
-  };
-  function group(op) { return op === "+" || op === "-" ? "add" : op === "*" || op === "/" ? "mul" : null; }
-  function core(n) { while (n.k === "paren") n = n.x; return n; }
-
-  function childrenOf(n) {
-    var c = core(n), out = [];
-    if (c.k === "bin" && group(c.op)) {
-      var g = group(c.op);
-      (function collect(m, op) {
-        if (m.k === "bin" && group(m.op) === g) { collect(m.l, op); out.push({ tag: OP_LABEL[m.op], n: m.r, isOp: true }); }
-        else out.push({ tag: op, n: m, isOp: true });
-      })(c, "");
-    } else if (c.k === "bin") {
-      out.push({ tag: "", n: c.l, isOp: true });
-      out.push({ tag: OP_LABEL[c.op] || c.op, n: c.r, isOp: true });
-    } else if (c.k === "fn") {
-      var names = ARG_NAMES[c.name] || [];
-      c.args.forEach(function (arg, i) { if (arg.k !== "missing") out.push({ tag: names[i] || "", n: arg }); });
-    } else if (c.k === "unary") out.push({ tag: c.op === "-" ? "−" : "+", n: c.x, isOp: true });
-    else if (c.k === "pct") out.push({ tag: "%", n: c.x, isOp: true });
-    return out;
-  }
-
-  // One level of the calculation: leaves shown as cell chips / numbers, deeper parts as (…) or NAME(…).
-  function stepHtml(ex, n) {
-    var c = core(n), kids = childrenOf(n);
-    function piece(m) {
-      var k = core(m);
-      if (k.k === "ref" || k.k === "num" || k.k === "str" || k.k === "bool" || k.k === "err") return exprHtml(ex, m.s, m.e, "cells");
-      if (k.k === "fn") return "<b>" + esc(k.name) + "</b>(…)";
-      return "(…)";
-    }
-    var html;
-    if (c.k === "fn") {
-      html = "<b>" + esc(c.name) + "</b>(" + kids.map(function (k) { return piece(k.n); }).join(", ") + ")";
-    } else {
-      html = kids.map(function (k) { return (k.tag ? " " + esc(k.tag) + " " : "") + piece(k.n); }).join("");
-    }
-    return n.k === "paren" ? "(" + html + ")" : html;
-  }
-
-  function renderBreakdown() {
-    var ex = S.explore, out = $("fkTree");
-    if (!out) return;
-    if (!ex.root) {
-      out.innerHTML = '<div class="empty pad">This formula is too complex to break down. The inputs are listed below.</div>';
-      return;
-    }
-    var html = '<div class="th"><span>Calculation</span><span>Value</span></div>', unknown = 0, count = 0;
-    function walk(n, depth, ch) {
-      if (count++ > 200) return;
-      var c = core(n), kids = childrenOf(n), open = !ex.collapsed.has(n), val = n.val, body;
-      if (val === undefined && c.k !== "unk") unknown++;
-      var shown = fmtComp(val);
-      if (c.k === "ref") {
-        var it = ex.items[c.ref], color = ex.colorOf[ex.refs[c.ref].start] || "var(--muted)";
-        var addr = it ? (it.sheet !== ex.a.sheet ? it.sheet + "!" : "") + cleanAddr(it.addr) : cleanAddr(ex.refs[c.ref].text);
-        body = '<span class="sq" style="background:' + color + '"></span><span class="gl">' +
-          (it && it.name ? '<span class="lbl">' + esc(it.name) + '</span><span class="adr">' + esc(addr) + "</span>"
-                         : '<span class="lbl mono">' + esc(addr) + "</span>") + "</span>";
-        if (it && it.cellCount === 1 && it.text && it.text.indexOf("##") < 0) shown = it.text;
-      } else if (c.k === "num") {
-        body = '<span class="mono">' + esc(String(c.v)) + "</span>" + (c.v !== 0 && c.v !== 1 ? ' <span class="hc">typed-in</span>' : "");
-        shown = "";
-      } else if (c.k === "str" || c.k === "bool" || c.k === "err") {
-        body = '<span class="mono">' + esc(ex.a.formula.slice(c.s, c.e)) + "</span>";
-        shown = "";
-      } else {
-        body = '<span class="ex">' + (open && kids.length ? stepHtml(ex, n) : exprHtml(ex, n.s, n.e, "cells")) + "</span>";
-      }
-      var tag = ch && ch.tag ? '<span class="' + (ch.isOp ? "opx" : "tag") + '">' + esc(ch.tag) + "</span>" : "";
-      html += '<div class="tr' + (depth === 0 ? " root" : "") + '" style="--d:' + Math.min(depth, 8) + '">' +
-        '<span class="tog" data-n="' + ex.nodes.length + '">' + (kids.length ? (open ? "▾" : "▸") : "") + "</span>" +
-        tag + '<span class="tb">' + body + "</span>" +
-        '<span class="tv' + (FK.isErr(val) ? " bad" : "") + '">' + esc(shown) + "</span></div>";
-      ex.nodes.push(n);
-      if (open) kids.forEach(function (k) { walk(k.n, depth + 1, k); });
-    }
-    ex.nodes = [];
-    walk(ex.root, 0, null);
-    if (unknown) {
-      html += '<div class="foot"><button class="btn sm" id="fkCalc">Calculate the “?” steps in Excel</button>' +
-        '<span class="note">Uses a temporary hidden sheet (clears Undo).</span></div>';
-    }
-    out.innerHTML = html;
-    var togs = out.querySelectorAll(".tog");
-    for (var i = 0; i < togs.length; i++) {
-      togs[i].addEventListener("click", function (ev) {
-        var node = S.explore.nodes[+ev.currentTarget.getAttribute("data-n")];
-        if (!node || !childrenOf(node).length) return;
-        if (S.explore.collapsed.has(node)) S.explore.collapsed.delete(node); else S.explore.collapsed.add(node);
-        renderBreakdown();
-      });
-    }
-    if ($("fkCalc")) $("fkCalc").addEventListener("click", guard(fillUnknown));
-  }
-
-  function renderFormula() {
-    var ex = S.explore;
-    $("fkFormula").innerHTML = "= " + exprHtml(ex, 1, ex.a.formula.length, ex.mode);
-    var btns = document.querySelectorAll("#fkMode button");
-    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle("on", btns[i].getAttribute("data-m") === ex.mode);
-  }
-
-  function allNodes(root) {
-    var out = [];
-    (function walk(n) { out.push(n); childrenOf(n).forEach(function (k) { walk(k.n); }); })(root);
-    return out;
-  }
-
-  async function fillUnknown() {
-    var ex = S.explore;
-    var nodes = allNodes(ex.root).filter(function (n) { return n.val === undefined && n.k !== "unk" && n.k !== "missing"; }).slice(0, 40);
-    if (!nodes.length) return;
-    await Excel.run(async function (ctx) {
-      var tmp = ctx.workbook.worksheets.add("FK_tmp_" + Math.floor(Math.random() * 1e6));
-      tmp.visibility = Excel.SheetVisibility.hidden;
-      try {
-        var cells = nodes.map(function (n, i) {
-          var c = tmp.getRange("A" + (i * 1000 + 1));
-          c.formulas = [["=" + FK.qualifySlice(ex.a.formula, ex.refs, n.s, n.e, ex.a.sheet)]];
-          c.load("values,valueTypes");
-          return c;
-        });
-        await ctx.sync();
-        nodes.forEach(function (n, i) {
-          var v = cells[i].values[0][0], t = cells[i].valueTypes[0][0];
-          n.val = t === "Error" ? { err: String(v) } : t === "Empty" ? 0 : v;
-        });
-      } finally {
-        tmp.delete();
-        await ctx.sync();
-      }
-    });
-    renderBreakdown();
-  }
-
-  function cellCard(a) {
-    return '<div class="card"><div class="cl"><div class="ca"><span class="addr">' + esc(cleanAddr(a.addr)) + '</span><span class="shn">' +
-      esc(a.sheet) + "</span></div>" + (a.name ? '<div class="cn">' + esc(a.name) + "</div>" : "") +
-      '</div><div class="cv">' + esc(fmtValue(a.value, a.type, a.text)) + "</div></div>";
-  }
-
-  function sortBySheet(list, home) {
-    return list.map(function (it, i) { return { it: it, i: i }; }).sort(function (x, y) {
-      var hx = x.it.sheet === home ? 0 : 1, hy = y.it.sheet === home ? 0 : 1;
-      if (hx !== hy) return hx - hy;
-      if (x.it.sheet !== y.it.sheet) return x.it.sheet < y.it.sheet ? -1 : 1;
-      return x.i - y.i;
-    }).map(function (x) { return x.it; });
-  }
-
-  function setList(list, boxId, home) {
-    S.list = list;
-    S.listBox = boxId;
-    S.idx = -1;
-    S.originPushed = false;
-    var el = $(boxId);
-    el.innerHTML = list.length ? listHtml(list, home) : '<div class="empty pad">None in this workbook (links to other files are skipped).</div>';
-    bindList(el);
-  }
-
-  async function analyze() {
-    showTab("trace");
-    await showPane();
-    await Excel.run(async function (ctx) {
-      var a = await getActive(ctx);
-      var outEl = $("traceOut");
-      await loadLabels(ctx, [a]);
-      a.name = nameFor(a, null);
-      if (a.formula.charAt(0) !== "=") {
-        outEl.innerHTML = cellCard(a) + '<div class="empty pad">No formula here — this is a typed-in value. Use Dependents (⌘⌥U) to see where it is used.</div>';
-        S.list = [];
-        return;
-      }
-      var refs = FK.findRefs(a.formula);
-      var items = await resolveRefs(ctx, a, refs);
-      var uniq = [], byKey = {};
-      items.forEach(function (it) {
-        if (!it) return;
-        var key = (it.sheet + "!" + it.addr).toUpperCase();
-        if (!byKey[key]) { byKey[key] = it; uniq.push(it); }
-      });
-      await loadLabels(ctx, uniq);
-
-      var colorOf = {}, keyColor = {}, list = [];
-      items.forEach(function (it, i) {
-        if (!it) return;
-        var key = (it.sheet + "!" + it.addr).toUpperCase(), src = byKey[key];
-        it.rowLabel = src.rowLabel; it.colHeader = src.colHeader;
-        it.name = nameFor(it, a);
-        if (!keyColor[key]) {
-          keyColor[key] = COLORS[Object.keys(keyColor).length % COLORS.length];
-          list.push({ sheet: it.sheet, addr: it.addr, name: it.name, value: it.display, color: keyColor[key] });
-        }
-        colorOf[refs[i].start] = keyColor[key];
-      });
-
-      var root = FK.parseFormula(a.formula, refs);
-      if (root) {
-        FK.evalTree(root, function (i) {
-          var it = items[i];
-          if (!it) return undefined;
-          if (it.cellCount === 1) {
-            if (it.type === "Empty") return 0;
-            if (it.type === "Error") return { err: String(it.value) };
-            return it.value;
-          }
-          return it.values ? { range: it.values } : undefined;
-        });
-      }
-      var prevMode = S.explore && S.explore.mode;
-      S.explore = { a: a, refs: refs, items: items, root: root, colorOf: colorOf, mode: prevMode || "labels", collapsed: new Set(), nodes: [] };
-
-      outEl.innerHTML = cellCard(a) +
-        '<div class="sec"><span>Formula</span><span class="seg" id="fkMode"><button data-m="labels">Labels</button><button data-m="cells">Cells</button></span></div>' +
-        '<div class="fbox" id="fkFormula"></div>' +
-        '<div class="sec"><span>Breakdown</span><span class="hint">▸ click to fold</span></div>' +
-        '<div class="tree" id="fkTree"></div>' +
-        '<div class="sec"><span>Inputs (' + list.length + ')</span><span class="hint">click to jump · ⌘⌥J next · ⌘⌥B back</span></div>' +
-        '<div id="fkList"></div>';
-      renderFormula();
-      renderBreakdown();
-      var mb = document.querySelectorAll("#fkMode button");
-      for (var k = 0; k < mb.length; k++) {
-        mb[k].addEventListener("click", function (ev) {
-          S.explore.mode = ev.currentTarget.getAttribute("data-m");
-          renderFormula();
-          renderBreakdown();
-        });
-      }
-      setList(sortBySheet(list, a.sheet), "fkList", a.sheet);
-    });
-  }
-
-  async function explore() {
-    await analyze();
+    T.originPushed = false;
+    if (T.root) { T.cursor = T.root; renderTree(); }
   }
 
   // ------------------------------------------------------------------ Model map

@@ -96,6 +96,26 @@
     .gr.cur { background: var(--sel); }
     .gv { flex: none; font: 600 12px var(--mono); white-space: nowrap; }
 
+    /* trace tree */
+    .fbar { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg2); }
+    .fx { font: italic 600 12px Georgia, serif; color: var(--muted); padding-top: 1px; }
+    .ftxt { font: 12.5px/1.5 var(--mono); word-break: break-all; }
+    .muted { color: var(--muted); font-family: var(--sans); }
+    .tgrid { outline: none; }
+    .thead { display: flex; justify-content: space-between; padding: 4px 10px; background: var(--bg3); font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
+    .trow { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px calc(6px + var(--d) * 16px); border-bottom: 1px solid var(--line2); cursor: default; font-size: 12.5px; white-space: nowrap; }
+    .trow:hover { background: var(--hover); }
+    .trow.cur { background: var(--sel); }
+    .tgrid:focus .trow.cur { box-shadow: inset 2px 0 0 var(--accent); }
+    .trow.rootrow { font-weight: 600; }
+    .tg { width: 14px; flex: none; text-align: center; color: var(--muted); cursor: pointer; font-size: 11px; }
+    .dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+    .ca { flex: none; font: 600 12px var(--mono); }
+    .cf { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 11.5px var(--mono); color: var(--muted); }
+    .cv { flex: none; font: 600 12px var(--mono); text-align: right; }
+    .cv.bad { color: var(--err); }
+    .keyhelp { padding: 8px 10px; font-size: 11px; color: var(--muted); }
+
     /* other tabs */
     .row { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 10px 0; }
     .btn { border: 1px solid var(--line); background: var(--bg2); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
