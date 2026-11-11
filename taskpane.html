@@ -9,78 +9,123 @@
   <script src="app.js"></script>
   <style>
     :root {
-      --bg: #ffffff; --panel: #f6f7f9; --text: #1d2228; --muted: #6b7380; --line: #e2e5ea;
-      --accent: #1f6f43; --accent-text: #ffffff; --hover: #eef1f4; --sel: #dcefe3; --err: #b3261e;
+      --bg: #ffffff; --bg2: #f3f4f6; --bg3: #e9ebee; --text: #1b1f24; --muted: #6a7280; --line: #dcdfe4; --line2: #eceef1;
+      --accent: #217346; --accent-soft: #e3f1e8; --hover: #f0f5ff; --sel: #dbeafe; --err: #c62828; --hc: #a35a00; --hc-bg: #fff3dc;
       --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #1f2124; --panel: #27292d; --text: #e6e8eb; --muted: #9aa1ab; --line: #383b40;
-        --accent: #3fa36b; --accent-text: #0e1a13; --hover: #2f3236; --sel: #24432f; --err: #ff8a80;
+        --bg: #1e1f22; --bg2: #26282c; --bg3: #303338; --text: #e7e9ec; --muted: #9298a2; --line: #3a3d43; --line2: #2f3237;
+        --accent: #4caf7d; --accent-soft: #23382c; --hover: #2a3140; --sel: #253a5c; --err: #ff8a80; --hc: #ffb74d; --hc-bg: #3a2e1a;
       }
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
-    header { padding: 10px 12px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
-    h1 { font-size: 15px; margin: 0 0 8px; letter-spacing: .2px; }
-    nav { display: flex; gap: 2px; }
-    nav button { flex: 1; border: 0; background: none; color: var(--muted); padding: 7px 4px; font: inherit; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font: 12.5px/1.35 var(--sans); }
+    button { font: inherit; color: inherit; }
+
+    header { position: sticky; top: 0; z-index: 3; background: var(--bg); border-bottom: 1px solid var(--line); }
+    nav { display: flex; padding: 0 8px; }
+    nav button { border: 0; background: none; color: var(--muted); padding: 9px 10px 7px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
     nav button.on { color: var(--text); border-bottom-color: var(--accent); }
-    main { padding: 12px; }
+    .bar { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); background: var(--bg2); }
+    .tb-btn { display: flex; flex-direction: column; align-items: center; gap: 1px; flex: 1; border: 1px solid transparent; background: none; border-radius: 4px; padding: 4px 2px; cursor: pointer; }
+    .tb-btn:hover { background: var(--bg3); border-color: var(--line); }
+    .tb-btn b { font-size: 12px; }
+    .tb-btn kbd { font: 10px var(--sans); color: var(--muted); }
+
+    main { padding: 0 0 16px; }
     section { display: none; }
     section.on { display: block; }
-    .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-    .btn { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
-    .btn:hover { background: var(--hover); }
-    .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
-    .btn small { color: inherit; opacity: .7; margin-left: 4px; font-size: 11px; }
-    .status { min-height: 18px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    .status { font-size: 12px; color: var(--muted); padding: 0 10px; }
+    .status:not(:empty) { padding: 6px 10px; border-bottom: 1px solid var(--line); }
     .status.err { color: var(--err); }
+    .empty { color: var(--muted); }
+    .pad { padding: 12px 10px; }
+
+    /* selected cell card */
+    .card { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px; border-bottom: 1px solid var(--line); }
+    .ca { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+    .addr { font: 600 13px var(--mono); background: var(--accent-soft); color: var(--accent); border-radius: 3px; padding: 1px 5px; }
+    .shn { color: var(--muted); font-size: 11.5px; word-break: break-all; }
+    .cn { margin-top: 4px; font-weight: 600; font-size: 13px; }
+    .cv { font: 600 17px var(--mono); white-space: nowrap; padding-top: 1px; }
+
+    /* section headers */
+    .sec { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 10px 4px; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
+    .hint { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11px; text-align: right; }
+    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; text-transform: none; letter-spacing: 0; }
+    .seg button { border: 0; background: var(--bg); padding: 2px 8px; font-size: 11px; cursor: pointer; color: var(--muted); }
+    .seg button.on { background: var(--accent); color: #fff; }
+
+    /* formula box */
+    .fbox { margin: 0 10px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg2); font-size: 13px; line-height: 1.9; word-break: break-word; }
+    .rc { color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); border-radius: 3px; padding: 0 4px; font-weight: 600; white-space: normal; }
+
+    /* breakdown tree grid */
+    .tree { margin: 0 10px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+    .th { display: flex; justify-content: space-between; padding: 4px 8px; background: var(--bg3); font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
+    .tr { display: flex; align-items: flex-start; gap: 4px; padding: 5px 8px 5px calc(4px + var(--d) * 16px); border-bottom: 1px solid var(--line2); }
+    .tr:last-child { border-bottom: 0; }
+    .tr:nth-child(even) { background: color-mix(in srgb, var(--bg2) 55%, transparent); }
+    .tr.root { background: var(--bg2); font-weight: 600; }
+    .tog { width: 12px; flex: none; color: var(--muted); cursor: pointer; user-select: none; line-height: 1.5; }
+    .tb { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 6px; }
+    .ex { line-height: 1.75; word-break: break-word; }
+    .tv { flex: none; font: 600 12px var(--mono); text-align: right; padding-left: 8px; white-space: nowrap; }
+    .tv.bad { color: var(--err); }
+    .opx { flex: none; min-width: 14px; font: 700 13px var(--mono); color: var(--accent); line-height: 1.35; }
+    .tag { flex: none; font-size: 10.5px; color: var(--muted); background: var(--bg3); border-radius: 3px; padding: 1px 5px; margin-top: 1px; }
+    .hc { font-size: 10px; color: var(--hc); background: var(--hc-bg); border-radius: 3px; padding: 1px 4px; }
+    .mono { font-family: var(--mono); }
+    .foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; background: var(--bg2); border-top: 1px solid var(--line); }
+    .note { color: var(--muted); font-size: 11px; }
+
+    /* shared: label + address block, colour square */
+    .sq { flex: none; width: 9px; height: 9px; border-radius: 2px; margin-top: 4px; }
+    .gl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .lbl { word-break: break-word; }
+    .adr { font: 11px var(--mono); color: var(--muted); }
+
+    /* inputs grid */
+    .grid { margin: 0 10px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+    .gh { padding: 4px 8px; background: var(--bg3); font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
+    .gr { display: flex; align-items: flex-start; gap: 7px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line2); background: var(--bg); padding: 6px 8px; cursor: pointer; }
+    .gr:last-child { border-bottom: 0; }
+    .gr:hover, .gr:focus { background: var(--hover); outline: none; }
+    .gr.cur { background: var(--sel); }
+    .gv { flex: none; font: 600 12px var(--mono); white-space: nowrap; }
+
+    /* other tabs */
+    .row { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 10px 0; }
+    .btn { border: 1px solid var(--line); background: var(--bg2); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+    .btn:hover { background: var(--bg3); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .btn.sm { padding: 3px 8px; font-size: 11.5px; }
+    #mapOut, .tabnote { padding: 10px; }
     .title { font-weight: 600; margin: 4px 0 6px; }
-    .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; word-break: break-all; }
-    .list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-    .item { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); background: var(--bg); color: var(--text); padding: 6px 8px; font: inherit; cursor: pointer; }
-    .item:first-child { border-top: 0; }
-    .item:hover, .item:focus { background: var(--hover); outline: none; }
-    .item.cur { background: var(--sel); }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .label { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin: 10px 0 4px; font-weight: 700; }
+    .list { border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+    .item { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line2); background: var(--bg); padding: 5px 8px; cursor: pointer; }
+    .list .item:first-child { border-top: 0; }
+    .list .item:hover { background: var(--hover); }
     .item .a { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .item .v { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; text-align: right; }
-    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
-    .empty { color: var(--muted); padding: 8px 0; }
-    .code { font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-all; margin-bottom: 10px; }
-    .label { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 10px 0 4px; }
-    .big { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .step { font-family: var(--mono); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px dashed var(--line); }
-    .step .r { font-weight: 600; white-space: nowrap; }
+    .item .v { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; text-align: right; }
+    .chip { display: inline-block; min-width: 18px; text-align: center; font: 700 11px var(--mono); border-radius: 3px; padding: 0 4px; }
     table.legend { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-    table.legend td { padding: 4px 6px; border-top: 1px solid var(--line); }
-    table.legend td.n { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-    .chip { display: inline-block; min-width: 20px; text-align: center; font-family: var(--mono); font-weight: 700; border-radius: 4px; padding: 0 4px; }
-    .keys td { padding: 3px 6px; border-top: 1px solid var(--line); }
-    kbd { font-family: var(--mono); font-size: 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
-    .note { color: var(--muted); font-size: 12px; }
-    .item .a { min-width: 0; }
-    .nm { display: block; font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 11.5px; color: var(--muted); margin-left: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tn .nm { display: inline; margin-left: 4px; }
-    .words { font-size: 13px; line-height: 1.9; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; word-break: break-word; }
-    .w { border: 1px solid; border-radius: 4px; padding: 0 4px; font-weight: 600; white-space: nowrap; }
-    .tree { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
-    .tn { display: flex; align-items: baseline; gap: 6px; padding: 4px 4px 4px 0; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px; }
-    .tn:first-child { border-top: 0; }
-    .tn.root { font-weight: 600; }
-    .tn .op { color: var(--muted); min-width: 14px; font-family: -apple-system, system-ui, sans-serif; font-size: 11px; }
-    .tn .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tn .tv { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .tn .tv.bad { color: var(--err); }
-    .hc { font-family: -apple-system, system-ui, sans-serif; font-size: 10.5px; color: #b26a00; border: 1px solid #e6b866; border-radius: 3px; padding: 0 3px; }
+    table.legend td { padding: 4px 6px; border-top: 1px solid var(--line2); }
+    table.legend td.n { text-align: right; font-weight: 600; font-family: var(--mono); }
+    .keys { width: calc(100% - 20px); margin: 10px; border-collapse: collapse; border: 1px solid var(--line); }
+    .keys td { padding: 5px 8px; border-top: 1px solid var(--line2); }
+    kbd { font: 11px var(--mono); background: var(--bg2); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; white-space: nowrap; }
+    p.note { padding: 0 10px; }
   </style>
 </head>
 <body>
   <header>
-    <h1>FormulaKit</h1>
     <nav>
       <button data-tab="trace" class="on">Trace</button>
-      <button data-tab="explore">Explore</button>
       <button data-tab="map">Map</button>
       <button data-tab="format">Format</button>
       <button data-tab="keys">Keys</button>
@@ -90,17 +135,12 @@
     <div id="status" class="status"></div>
 
     <section id="tab-trace" class="on">
-      <div class="row">
-        <button class="btn primary" id="bPrec">Precedents</button>
-        <button class="btn primary" id="bDep">Dependents</button>
-        <button class="btn" id="bBack">Back</button>
+      <div class="bar">
+        <button class="tb-btn" id="bPrec"><b>Precedents</b><kbd>⌘⌥P</kbd></button>
+        <button class="tb-btn" id="bDep"><b>Dependents</b><kbd>⌘⌥U</kbd></button>
+        <button class="tb-btn" id="bBack"><b>◀ Back</b><kbd>⌘⌥B</kbd></button>
       </div>
-      <div id="traceOut"><div class="empty">Select a cell and press Precedents or Dependents.</div></div>
-    </section>
-
-    <section id="tab-explore">
-      <div class="row"><button class="btn primary" id="bExplore">Explore active cell</button></div>
-      <div id="exploreOut"><div class="empty">Select a cell and press Explore (⌘⌥E) to see what each input is and how the formula is built.</div></div>
+      <div id="traceOut"><div class="empty pad">Select a cell and press <b>Precedents</b> to see what it's made of, or <b>Dependents</b> to see where it's used.</div></div>
     </section>
 
     <section id="tab-map">
@@ -116,7 +156,7 @@
       <div class="row"><button class="btn" id="bFont">Cycle font colour</button></div>
       <div class="row"><button class="btn" id="bAuto">Auto-colour selection</button></div>
       <div class="row"><button class="btn" id="bBorder">Cycle borders</button></div>
-      <p class="note">Number formats: #,##0 → 0.0 → 0.00 → % → x multiple → date → General.<br>
+      <p class="note" style="margin-top:12px">Number formats: #,##0 → 0.0 → 0.00 → % → x multiple → date → General.<br>
       Font colours: blue → green → black.<br>
       Auto-colour: typed numbers blue, links to other sheets green, other formulas black.<br>
       Borders: bottom line → total line → box → none.</p>
@@ -124,7 +164,7 @@
 
     <section id="tab-keys">
       <table class="keys" id="keysTable"></table>
-      <p class="note">On a Mac, Ctrl = ⌘ Command and Alt = ⌥ Option. If Excel already uses a shortcut, it asks which one to keep.</p>
+      <p class="note">⌘ = Command, ⌥ = Option. If Excel already uses a shortcut, it asks which one to keep.</p>
     </section>
   </main>
 </body>
