@@ -8,183 +8,158 @@
   <script src="parser.js"></script>
   <script src="app.js"></script>
   <style>
+    /* Classic Windows dialog look, always light (like the original tool). */
     :root {
-      --bg: #ffffff; --bg2: #f3f4f6; --bg3: #e9ebee; --text: #1b1f24; --muted: #6a7280; --line: #dcdfe4; --line2: #eceef1;
-      --accent: #217346; --accent-soft: #e3f1e8; --hover: #f0f5ff; --sel: #dbeafe; --err: #c62828; --hc: #a35a00; --hc-bg: #fff3dc;
-      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #1e1f22; --bg2: #26282c; --bg3: #303338; --text: #e7e9ec; --muted: #9298a2; --line: #3a3d43; --line2: #2f3237;
-        --accent: #4caf7d; --accent-soft: #23382c; --hover: #2a3140; --sel: #253a5c; --err: #ff8a80; --hc: #ffb74d; --hc-bg: #3a2e1a;
-      }
+      --chrome: #6a788c; --chrome-text: #ffffff; --face: #f0f0f0; --win: #ffffff; --edge: #a0a0a0; --edge2: #d9d9d9;
+      --text: #000000; --dim: #8c8c8c; --sel: #3477d4; --sel-text: #ffffff; --link: #1a56db; --btn: #fdfdfd; --btn-edge: #adadad;
+      --focus: #3c7fd8; --err: #c00000;
+      --font: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      color-scheme: light;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; background: var(--bg); color: var(--text); font: 12.5px/1.35 var(--sans); }
+    html, body { margin: 0; height: 100%; }
+    body { background: var(--face); color: var(--text); font: 13px/1.25 var(--font); display: flex; flex-direction: column; }
     button { font: inherit; color: inherit; }
 
-    header { position: sticky; top: 0; z-index: 3; background: var(--bg); border-bottom: 1px solid var(--line); }
-    nav { display: flex; padding: 0 8px; }
-    nav button { border: 0; background: none; color: var(--muted); padding: 9px 10px 7px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
-    nav button.on { color: var(--text); border-bottom-color: var(--accent); }
-    .bar { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); background: var(--bg2); }
-    .tb-btn { display: flex; flex-direction: column; align-items: center; gap: 1px; flex: 1; border: 1px solid transparent; background: none; border-radius: 4px; padding: 4px 2px; cursor: pointer; }
-    .tb-btn:hover { background: var(--bg3); border-color: var(--line); }
-    .tb-btn b { font-size: 12px; }
-    .tb-btn kbd { font: 10px var(--sans); color: var(--muted); }
+    .title { background: var(--chrome); color: var(--chrome-text); padding: 9px 12px; font-size: 15px; letter-spacing: .1px; flex: none; }
 
-    main { padding: 0 0 16px; }
-    section { display: none; }
-    section.on { display: block; }
-    .status { font-size: 12px; color: var(--muted); padding: 0 10px; }
-    .status:not(:empty) { padding: 6px 10px; border-bottom: 1px solid var(--line); }
+    main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 10px 0; }
+    section { display: none; flex: 1; min-height: 0; flex-direction: column; }
+    section.on { display: flex; }
+    .status { color: #555; font-size: 12px; min-height: 0; }
+    .status:not(:empty) { padding: 0 0 6px; }
     .status.err { color: var(--err); }
-    .empty { color: var(--muted); }
-    .pad { padding: 12px 10px; }
 
-    /* selected cell card */
-    .card { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px; border-bottom: 1px solid var(--line); }
-    .ca { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-    .addr { font: 600 13px var(--mono); background: var(--accent-soft); color: var(--accent); border-radius: 3px; padding: 1px 5px; }
-    .shn { color: var(--muted); font-size: 11.5px; word-break: break-all; }
-    .cn { margin-top: 4px; font-weight: 600; font-size: 13px; }
-    .cv { font: 600 17px var(--mono); white-space: nowrap; padding-top: 1px; }
+    /* explorer grid */
+    .xgrid { flex: 1; min-height: 120px; display: flex; flex-direction: column; background: var(--win); border: 1px solid var(--edge); outline: none; }
+    .xgrid:focus { border-color: var(--focus); }
+    .xhead, .xr { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, .85fr) minmax(0, .75fr) minmax(0, .95fr); }
+    .xhead { border-bottom: 1px solid var(--edge2); flex: none; }
+    .xhead span { padding: 4px 6px; border-right: 1px solid var(--edge2); white-space: nowrap; overflow: hidden; }
+    .xhead span:last-child { border-right: 0; }
+    .xhead .r, .xv { text-align: right; }
+    .xbody { flex: 1; overflow: auto; padding: 2px 0; }
+    .xr { height: 23px; align-items: center; cursor: default; white-space: nowrap; }
+    .xr > span { overflow: hidden; text-overflow: ellipsis; padding: 0 6px; }
+    .xe { display: flex; align-items: center; padding-left: 4px !important; height: 100%; }
+    .xi, .xl { color: var(--text); }
+    .xr.dim .lb, .xr.dim .xi, .xr.dim .xv { color: var(--dim); }
+    .xr.sel { background: var(--sel); color: var(--sel-text); font-weight: 600; }
+    .xr.sel .xi, .xr.sel .xl, .xr.sel .lb { color: var(--sel-text); }
+    .lb { overflow: hidden; text-overflow: ellipsis; padding-left: 3px; }
 
-    /* section headers */
-    .sec { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 10px 4px; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
-    .hint { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11px; text-align: right; }
-    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; text-transform: none; letter-spacing: 0; }
-    .seg button { border: 0; background: var(--bg); padding: 2px 8px; font-size: 11px; cursor: pointer; color: var(--muted); }
-    .seg button.on { background: var(--accent); color: #fff; }
+    /* dotted tree guides, 16px per level */
+    .g { position: relative; flex: none; width: 16px; height: 23px; }
+    .gv::before, .gt::before, .gl::before { content: ""; position: absolute; left: 7px; top: 0; border-left: 1px dotted #9a9a9a; }
+    .gv::before, .gt::before { bottom: 0; }
+    .gl::before { height: 12px; }
+    .gt::after, .gl::after { content: ""; position: absolute; left: 8px; top: 11px; width: 8px; border-top: 1px dotted #9a9a9a; }
+    .pm { flex: none; width: 9px; height: 9px; border: 1px solid #919191; background: #fff; color: #333; font: 9px/7px var(--font); text-align: center; margin: 0 3px 0 0; cursor: pointer; }
+    .pm.none { border-color: transparent; background: transparent; position: relative; }
+    .pm.none::after { content: ""; position: absolute; left: -1px; top: 3px; width: 8px; border-top: 1px dotted #9a9a9a; }
+    .xr:first-child .pm.none::after { display: none; }
 
     /* formula box */
-    .fbox { margin: 0 10px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg2); font-size: 13px; line-height: 1.9; word-break: break-word; }
-    .rc { color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); border-radius: 3px; padding: 0 4px; font-weight: 600; white-space: normal; }
+    .xformula { flex: none; margin-top: 10px; min-height: 64px; max-height: 140px; overflow: auto; background: var(--win); border: 1px solid var(--edge); padding: 4px 5px; font-size: 13px; line-height: 1.35; word-break: break-all; white-space: pre-wrap; }
+    .hl { color: var(--link); text-decoration: underline; }
 
-    /* breakdown tree grid */
-    .tree { margin: 0 10px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
-    .th { display: flex; justify-content: space-between; padding: 4px 8px; background: var(--bg3); font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
-    .tr { display: flex; align-items: flex-start; gap: 4px; padding: 5px 8px 5px calc(4px + var(--d) * 16px); border-bottom: 1px solid var(--line2); }
-    .tr:last-child { border-bottom: 0; }
-    .tr:nth-child(even) { background: color-mix(in srgb, var(--bg2) 55%, transparent); }
-    .tr.root { background: var(--bg2); font-weight: 600; }
-    .tog { width: 12px; flex: none; color: var(--muted); cursor: pointer; user-select: none; line-height: 1.5; }
-    .tb { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 6px; }
-    .ex { line-height: 1.75; word-break: break-word; }
-    .tv { flex: none; font: 600 12px var(--mono); text-align: right; padding-left: 8px; white-space: nowrap; }
-    .tv.bad { color: var(--err); }
-    .opx { flex: none; min-width: 14px; font: 700 13px var(--mono); color: var(--accent); line-height: 1.35; }
-    .tag { flex: none; font-size: 10.5px; color: var(--muted); background: var(--bg3); border-radius: 3px; padding: 1px 5px; margin-top: 1px; }
-    .hc { font-size: 10px; color: var(--hc); background: var(--hc-bg); border-radius: 3px; padding: 1px 4px; }
-    .mono { font-family: var(--mono); }
-    .foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; background: var(--bg2); border-top: 1px solid var(--line); }
-    .note { color: var(--muted); font-size: 11px; }
+    .xfoot { flex: none; display: flex; justify-content: flex-end; gap: 10px; padding: 10px 0; position: relative; }
+    .wbtn { min-width: 110px; height: 32px; background: var(--btn); border: 1px solid var(--btn-edge); border-radius: 4px; cursor: pointer; padding: 0 14px; }
+    .wbtn:hover { background: #e5f1fb; border-color: #0078d4; }
+    .wbtn.ok { border: 2px solid var(--focus); }
+    .wbtn .car { font-size: 10px; margin-left: 10px; }
+    .menu { position: absolute; right: 120px; bottom: 44px; background: #fff; border: 1px solid var(--edge); box-shadow: 0 4px 12px rgba(0,0,0,.18); min-width: 220px; padding: 3px 0; display: none; z-index: 5; }
+    .menu.on { display: block; }
+    .menu button { display: flex; justify-content: space-between; gap: 16px; width: 100%; border: 0; background: none; padding: 6px 12px; text-align: left; cursor: pointer; }
+    .menu button:hover { background: var(--sel); color: #fff; }
+    .menu kbd { font: 11px var(--font); opacity: .7; }
+    .menu hr { border: 0; border-top: 1px solid var(--edge2); margin: 3px 0; }
+    .xhint { color: #666; font-size: 11px; padding-top: 6px; flex: none; }
 
-    /* shared: label + address block, colour square */
-    .sq { flex: none; width: 9px; height: 9px; border-radius: 2px; margin-top: 4px; }
-    .gl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-    .lbl { word-break: break-word; }
-    .adr { font: 11px var(--mono); color: var(--muted); }
-
-    /* inputs grid */
-    .grid { margin: 0 10px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
-    .gh { padding: 4px 8px; background: var(--bg3); font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
-    .gr { display: flex; align-items: flex-start; gap: 7px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line2); background: var(--bg); padding: 6px 8px; cursor: pointer; }
-    .gr:last-child { border-bottom: 0; }
-    .gr:hover, .gr:focus { background: var(--hover); outline: none; }
-    .gr.cur { background: var(--sel); }
-    .gv { flex: none; font: 600 12px var(--mono); white-space: nowrap; }
-
-    /* trace tree */
-    .fbar { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg2); }
-    .fx { font: italic 600 12px Georgia, serif; color: var(--muted); padding-top: 1px; }
-    .ftxt { font: 12.5px/1.5 var(--mono); word-break: break-all; }
-    .muted { color: var(--muted); font-family: var(--sans); }
-    .tgrid { outline: none; }
-    .thead { display: flex; justify-content: space-between; padding: 4px 10px; background: var(--bg3); font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
-    .trow { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px calc(6px + var(--d) * 16px); border-bottom: 1px solid var(--line2); cursor: default; font-size: 12.5px; white-space: nowrap; }
-    .trow:hover { background: var(--hover); }
-    .trow.cur { background: var(--sel); }
-    .tgrid:focus .trow.cur { box-shadow: inset 2px 0 0 var(--accent); }
-    .trow.rootrow { font-weight: 600; }
-    .tg { width: 14px; flex: none; text-align: center; color: var(--muted); cursor: pointer; font-size: 11px; }
-    .dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
-    .ca { flex: none; font: 600 12px var(--mono); }
-    .cf { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 11.5px var(--mono); color: var(--muted); }
-    .cv { flex: none; font: 600 12px var(--mono); text-align: right; }
-    .cv.bad { color: var(--err); }
-    .keyhelp { padding: 8px 10px; font-size: 11px; color: var(--muted); }
-
-    /* other tabs */
-    .row { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 10px 0; }
-    .btn { border: 1px solid var(--line); background: var(--bg2); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
-    .btn:hover { background: var(--bg3); }
-    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-    .btn.sm { padding: 3px 8px; font-size: 11.5px; }
-    #mapOut, .tabnote { padding: 10px; }
-    .title { font-weight: 600; margin: 4px 0 6px; }
-    .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-    .label { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin: 10px 0 4px; font-weight: 700; }
-    .list { border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
-    .item { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line2); background: var(--bg); padding: 5px 8px; cursor: pointer; }
+    /* other pages (map / format / keys) */
+    .page { background: var(--win); border: 1px solid var(--edge); padding: 10px; overflow: auto; flex: 1; }
+    .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .btn { background: var(--btn); border: 1px solid var(--btn-edge); border-radius: 4px; padding: 5px 12px; cursor: pointer; }
+    .btn:hover { background: #e5f1fb; border-color: #0078d4; }
+    .btn.primary { border: 2px solid var(--focus); }
+    .empty { color: #666; }
+    .note { color: #666; font-size: 12px; }
+    .sub { color: #666; font-size: 12px; margin-bottom: 8px; }
+    .label { font-size: 11px; text-transform: uppercase; color: #666; margin: 10px 0 4px; font-weight: 600; }
+    .list { border: 1px solid var(--edge2); }
+    .item { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--edge2); background: #fff; padding: 4px 6px; cursor: pointer; }
     .list .item:first-child { border-top: 0; }
-    .list .item:hover { background: var(--hover); }
-    .item .a { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .item .v { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; text-align: right; }
-    .chip { display: inline-block; min-width: 18px; text-align: center; font: 700 11px var(--mono); border-radius: 3px; padding: 0 4px; }
+    .list .item:hover { background: #e5f1fb; }
+    .item .a { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .item .v { color: #666; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; text-align: right; }
+    .chip { display: inline-block; min-width: 18px; text-align: center; font-weight: 700; font-size: 11px; border-radius: 2px; padding: 0 4px; }
     table.legend { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-    table.legend td { padding: 4px 6px; border-top: 1px solid var(--line2); }
-    table.legend td.n { text-align: right; font-weight: 600; font-family: var(--mono); }
-    .keys { width: calc(100% - 20px); margin: 10px; border-collapse: collapse; border: 1px solid var(--line); }
-    .keys td { padding: 5px 8px; border-top: 1px solid var(--line2); }
-    kbd { font: 11px var(--mono); background: var(--bg2); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; white-space: nowrap; }
-    p.note { padding: 0 10px; }
+    table.legend td { padding: 3px 6px; border-top: 1px solid var(--edge2); }
+    table.legend td.n { text-align: right; font-weight: 600; }
+    .keys { width: 100%; border-collapse: collapse; }
+    .keys td { padding: 5px 6px; border-top: 1px solid var(--edge2); }
+    kbd { font: 12px var(--font); background: #f7f7f7; border: 1px solid #ccc; border-radius: 3px; padding: 0 5px; white-space: nowrap; }
+    .back { margin-bottom: 8px; }
   </style>
 </head>
 <body>
-  <header>
-    <nav>
-      <button data-tab="trace" class="on">Trace</button>
-      <button data-tab="map">Map</button>
-      <button data-tab="format">Format</button>
-      <button data-tab="keys">Keys</button>
-    </nav>
-  </header>
+  <div class="title" id="xtitle">FormulaKit Explorer</div>
   <main>
     <div id="status" class="status"></div>
 
     <section id="tab-trace" class="on">
-      <div class="bar">
-        <button class="tb-btn" id="bPrec"><b>Precedents</b><kbd>⌘⌥P</kbd></button>
-        <button class="tb-btn" id="bDep"><b>Dependents</b><kbd>⌘⌥U</kbd></button>
-        <button class="tb-btn" id="bBack"><b>◀ Back</b><kbd>⌘⌥B</kbd></button>
+      <div class="xgrid" id="xgrid" tabindex="0">
+        <div class="xhead"><span>Element</span><span id="xheadInfo">Info</span><span class="r">Value</span><span>Location</span></div>
+        <div class="xbody" id="xbody"><div class="empty" style="padding:8px">Select a cell and press ⌘⌥P.</div></div>
       </div>
-      <div id="traceOut"><div class="empty pad">Select a cell and press <b>Precedents</b> to see what it's made of, or <b>Dependents</b> to see where it's used.</div></div>
+      <div class="xformula" id="xformula"></div>
+      <div class="xhint">↑↓ move · → / + expand · ← / − collapse · Esc back to start · Enter OK</div>
+      <div class="xfoot">
+        <div class="menu" id="xmenu">
+          <button data-act="prec">Explore precedents<kbd>⌘⌥P</kbd></button>
+          <button data-act="dep">Explore dependents<kbd>⌘⌥U</kbd></button>
+          <button data-act="back">Back to start<kbd>⌘⌥B</kbd></button>
+          <hr>
+          <button data-act="map">Model map<kbd>⌘⌥G</kbd></button>
+          <button data-act="format">Formatting shortcuts</button>
+          <button data-act="keys">All shortcuts</button>
+        </div>
+        <button class="wbtn" id="bMore">More<span class="car">▼</span></button>
+        <button class="wbtn ok" id="bOK">OK</button>
+      </div>
     </section>
 
     <section id="tab-map">
-      <div class="row">
-        <button class="btn primary" id="bMap">Map active sheet</button>
-        <button class="btn" id="bMapDel">Remove map sheets</button>
+      <div class="page">
+        <div class="row"><button class="btn back" data-back>← Explorer</button></div>
+        <div class="row">
+          <button class="btn primary" id="bMap">Map active sheet</button>
+          <button class="btn" id="bMapDel">Remove map sheets</button>
+        </div>
+        <div id="mapOut"><div class="empty">Adds a "Map" sheet that labels every cell of the active sheet at the same address, and lists cells worth reviewing.</div></div>
       </div>
-      <div id="mapOut"><div class="empty">Adds a "Map" sheet that labels every cell of the active sheet at the same address, and lists cells worth reviewing.</div></div>
     </section>
 
     <section id="tab-format">
-      <div class="row"><button class="btn" id="bNum">Cycle number format</button></div>
-      <div class="row"><button class="btn" id="bFont">Cycle font colour</button></div>
-      <div class="row"><button class="btn" id="bAuto">Auto-colour selection</button></div>
-      <div class="row"><button class="btn" id="bBorder">Cycle borders</button></div>
-      <p class="note" style="margin-top:12px">Number formats: #,##0 → 0.0 → 0.00 → % → x multiple → date → General.<br>
-      Font colours: blue → green → black.<br>
-      Auto-colour: typed numbers blue, links to other sheets green, other formulas black.<br>
-      Borders: bottom line → total line → box → none.</p>
+      <div class="page">
+        <div class="row"><button class="btn back" data-back>← Explorer</button></div>
+        <div class="row"><button class="btn" id="bNum">Cycle number format</button> <kbd>⌘⌥N</kbd></div>
+        <div class="row"><button class="btn" id="bFont">Cycle font colour</button> <kbd>⌘⌥C</kbd></div>
+        <div class="row"><button class="btn" id="bAuto">Auto-colour selection</button> <kbd>⌘⌥A</kbd></div>
+        <div class="row"><button class="btn" id="bBorder">Cycle borders</button> <kbd>⌘⌥K</kbd></div>
+        <p class="note">Number formats: #,##0 → 0.0 → 0.00 → % → x multiple → date → General.<br>
+        Font colours: blue → green → black.<br>
+        Auto-colour: typed numbers blue, links to other sheets green, other formulas black.<br>
+        Borders: bottom line → total line → box → none.</p>
+      </div>
     </section>
 
     <section id="tab-keys">
-      <table class="keys" id="keysTable"></table>
-      <p class="note">⌘ = Command, ⌥ = Option. If Excel already uses a shortcut, it asks which one to keep.</p>
+      <div class="page">
+        <div class="row"><button class="btn back" data-back>← Explorer</button></div>
+        <table class="keys" id="keysTable"></table>
+        <p class="note">⌘ = Command, ⌥ = Option.</p>
+      </div>
     </section>
   </main>
 </body>

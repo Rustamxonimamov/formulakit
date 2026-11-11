@@ -26,8 +26,8 @@
     "General"
   ];
   var KEYS = [
-    ["Trace precedents", "P"], ["Trace dependents", "U"], ["Jump to next in list", "J"],
-    ["Go back", "B"], ["Formula explorer", "E"], ["Model map", "G"],
+    ["Explore precedents", "P"], ["Explore dependents", "U"], ["Jump to next in list", "J"],
+    ["Go back", "B"], ["Explore (same as P)", "E"], ["Model map", "G"],
     ["Cycle number format", "N"], ["Cycle font colour", "C"], ["Auto-colour", "A"], ["Cycle borders", "K"]
   ];
 
@@ -185,7 +185,7 @@
 
     // phase 3: values for small ranges
     rngs.forEach(function (rng) {
-      if (rng && !rng.isNullObject && rng.cellCount <= 5000) rng.load("values,valueTypes,text");
+      if (rng && !rng.isNullObject && rng.cellCount <= 5000) rng.load("values,valueTypes,text,formulas");
     });
     await ctx.sync();
 
@@ -197,6 +197,8 @@
         out.value = rng.values[0][0];
         out.type = rng.valueTypes[0][0];
         out.text = rng.text[0][0];
+        var f0 = rng.formulas[0][0];
+        out.formula = typeof f0 === "string" && f0.charAt(0) === "=" ? f0 : "";
         out.display = fmtValue(out.value, out.type, out.text);
       } else if (rng.cellCount <= 5000) {
         var sum = 0, nums = 0;
@@ -340,239 +342,417 @@
     return hits;
   }
 
-  // ------------------------------------------------------------------ Trace tree (Arixcel-style)
+  // ------------------------------------------------------------------ Explorer (Arixcel-style logical tree)
   //
-  // One tree of cells. Root = selected cell. Children = the cells its formula uses
-  // (or, in dependents mode, the cells that use it). ▸ opens the next level.
-  // Selecting a row selects that cell in the sheet straight away.
+  // Root = the selected cell. Below it, the formula's logical tree: functions with their
+  // Excel argument names (Info), every element's value, and where it points (Location).
+  // Moving the selection selects that location in the sheet.
 
-  var T = { root: null, mode: "prec", cursor: null, rows: [], originPushed: false };
+  var X = { mode: "prec", root: null, cur: null, rows: [], pushed: false };
 
   function cleanAddr(a) { return String(a).replace(/\$/g, ""); }
 
-  function mkNode(sheet, addr, parent) {
-    return { sheet: sheet, addr: cleanAddr(addr), parent: parent || null, depth: parent ? parent.depth + 1 : 0,
-             formula: "", text: "", multi: false, cells: 1, kids: null, open: false, err: false };
+  var ARGSPEC = {
+    IF: "logical_test,value_if_true,value_if_false", IFERROR: "value,value_if_error", IFNA: "value,value_if_na",
+    OFFSET: "reference,rows,cols,height,width", INDEX: "array,row_num,column_num", MATCH: "lookup_value,lookup_array,match_type",
+    VLOOKUP: "lookup_value,table_array,col_index_num,range_lookup", HLOOKUP: "lookup_value,table_array,row_index_num,range_lookup",
+    XLOOKUP: "lookup_value,lookup_array,return_array,if_not_found,match_mode,search_mode",
+    SUMIF: "range,criteria,sum_range", COUNTIF: "range,criteria", AVERAGEIF: "range,criteria,average_range",
+    SUMIFS: "sum_range,(criteria_range,criteria)*", COUNTIFS: "(criteria_range,criteria)*", AVERAGEIFS: "average_range,(criteria_range,criteria)*",
+    MAXIFS: "max_range,(criteria_range,criteria)*", MINIFS: "min_range,(criteria_range,criteria)*",
+    ROUND: "number,num_digits", ROUNDUP: "number,num_digits", ROUNDDOWN: "number,num_digits", MOD: "number,divisor",
+    POWER: "number,power", ABS: "number", INT: "number", SQRT: "number", SIGN: "number", EXP: "number", LN: "number",
+    EOMONTH: "start_date,months", EDATE: "start_date,months", DATE: "year,month,day", YEAR: "serial_number",
+    MONTH: "serial_number", DAY: "serial_number", LEFT: "text,num_chars", RIGHT: "text,num_chars", MID: "text,start_num,num_chars",
+    LEN: "text", UPPER: "text", LOWER: "text", TRIM: "text", NOT: "logical", TEXT: "value,format_text", NPV: "rate,value*",
+    PMT: "rate,nper,pv,fv,type", CHOOSE: "index_num,value*", SUM: "number*", PRODUCT: "number*", AVERAGE: "number*",
+    MIN: "number*", MAX: "number*", MEDIAN: "number*", COUNT: "value*", COUNTA: "value*", SUMPRODUCT: "array*",
+    AND: "logical*", OR: "logical*", CONCAT: "text*", CONCATENATE: "text*", ISNUMBER: "value", ISERROR: "value",
+    ISTEXT: "value", ISNA: "value", ROWS: "array", COLUMNS: "array", IFS: "(logical_test,value_if_true)*"
+  };
+
+  function argName(fn, i) {
+    var spec = ARGSPEC[fn];
+    if (!spec) return "";
+    var parts = spec.split(/,(?![^(]*\))/), fixed = [];
+    for (var k = 0; k < parts.length; k++) {
+      var p = parts[k];
+      if (/\*$/.test(p)) {
+        var rest = i - fixed.length;
+        if (rest < 0) return fixed[i];
+        if (p.charAt(0) === "(") {
+          var pair = p.slice(1, -2).split(",");
+          return pair[rest % 2] + (Math.floor(rest / 2) + 1);
+        }
+        return p.slice(0, -1) + (rest + 1);
+      }
+      fixed.push(p);
+    }
+    return fixed[i] || "";
   }
 
-  // Load formula + displayed value for each node.
-  async function fillInfo(ctx, nodes) {
-    var rs = nodes.map(function (n) {
-      var r = ctx.workbook.worksheets.getItem(n.sheet).getRange(n.addr);
-      r.load("cellCount");
-      var c0 = r.getCell(0, 0);
-      c0.load("formulas,text,values,valueTypes");
-      return { r: r, c0: c0 };
-    });
+  function core(n) { while (n && n.k === "paren") n = n.x; return n; }
+  function group(op) { return op === "+" || op === "-" ? "add" : op === "*" || op === "/" ? "mul" : null; }
+  function isLeafExpr(n) { var c = core(n); return c.k === "num" || c.k === "str" || c.k === "bool" || c.k === "err" || c.k === "unk" || c.k === "missing"; }
+
+  // ---- cell contexts (one per formula cell shown in the tree)
+
+  function itemVal(it) {
+    if (!it) return undefined;
+    if (it.cellCount === 1) {
+      if (it.type === "Empty") return 0;
+      if (it.type === "Error") return { err: String(it.value) };
+      return it.value;
+    }
+    return it.values ? { range: it.values } : undefined;
+  }
+
+  async function makeCx(ctx, sheet, addr) {
+    var c = ctx.workbook.worksheets.getItem(sheet).getRange(addr);
+    c.load("formulas,values,valueTypes,text,rowIndex");
     await ctx.sync();
-    var sums = [];
-    nodes.forEach(function (n, i) {
-      var x = rs[i];
-      n.cells = x.r.cellCount;
-      n.multi = n.cells > 1;
-      if (!n.multi) {
-        var f = x.c0.formulas[0][0];
-        n.formula = typeof f === "string" && f.charAt(0) === "=" ? f : "";
-        n.err = x.c0.valueTypes[0][0] === "Error";
-        n.text = fmtValue(x.c0.values[0][0], x.c0.valueTypes[0][0], x.c0.text[0][0]);
-      } else if (n.cells <= 5000) {
-        x.r.load("values");
-        sums.push(n);
-        n._r = x.r;
-      } else {
-        n.text = n.cells.toLocaleString() + " cells";
-      }
-    });
-    if (sums.length) {
+    var cx = { sheet: sheet, addr: cleanAddr(addr), formula: "", text: fmtValue(c.values[0][0], c.valueTypes[0][0], c.text[0][0]),
+               refs: [], items: [], root: null, cache: {} };
+    var f = c.formulas[0][0];
+    if (typeof f === "string" && f.charAt(0) === "=") {
+      cx.formula = f;
+      cx.refs = FK.findRefs(f);
+      cx.items = await resolveRefs(ctx, { sheet: sheet, addr: cx.addr, row: c.rowIndex + 1 }, cx.refs);
+      cx.root = FK.parseFormula(f, cx.refs);
+      if (cx.root) await evalCx(ctx, cx);
+    }
+    return cx;
+  }
+
+  async function evalCx(ctx, cx) {
+    for (var round = 0; round < 4; round++) {
+      var need = {};
+      FK.evalTree(cx.root, {
+        getRef: function (i) { return itemVal(cx.items[i]); },
+        refLoc: function (i) { var it = cx.items[i]; var b = it && FK.parseA1(it.addr); return b ? { sheet: it.sheet, b: b } : null; },
+        cellValue: function (loc) {
+          var k = FK.locKey(loc);
+          if (k in cx.cache) return cx.cache[k];
+          need[k] = loc;
+          return undefined;
+        }
+      });
+      var keys = Object.keys(need);
+      if (!keys.length) return;
+      var rs = keys.map(function (k) {
+        var r = ctx.workbook.worksheets.getItem(need[k].sheet).getRange(FK.locAddr(need[k]));
+        r.load("cellCount");
+        return r;
+      });
       await ctx.sync();
-      sums.forEach(function (n) {
-        var s = 0;
-        n._r.values.forEach(function (row) { row.forEach(function (v) { if (typeof v === "number") s += v; }); });
-        n.text = "Σ " + fmtNum(s);
-        delete n._r;
+      rs.forEach(function (r) { if (r.cellCount <= 5000) r.load("values,valueTypes"); });
+      await ctx.sync();
+      keys.forEach(function (k, i) {
+        var r = rs[i];
+        if (r.cellCount > 5000) { cx.cache[k] = undefined; return; }
+        if (r.cellCount === 1) {
+          var t = r.valueTypes[0][0], v = r.values[0][0];
+          cx.cache[k] = t === "Empty" ? 0 : t === "Error" ? { err: String(v) } : v;
+        } else cx.cache[k] = { range: r.values };
       });
     }
   }
 
-  function canOpen(n) {
-    if (T.mode === "dep") return !n.multi;
-    return n.multi ? n.cells <= 500 : !!n.formula;
+  // ---- display nodes
+
+  function dnode(parent, props) {
+    var d = { parent: parent, depth: parent ? parent.depth + 1 : 0, kids: null, open: false };
+    for (var k in props) d[k] = props[k];
+    return d;
   }
 
-  // Children of a node, loaded on first open.
-  async function loadKids(n) {
-    await Excel.run(async function (ctx) {
-      var kids = [];
-      var b = FK.parseA1(n.addr);
-      if (n.multi) {
-        for (var r = b.r1; r <= b.r2 && kids.length < 500; r++)
-          for (var c = b.c1; c <= b.c2 && kids.length < 500; c++) kids.push(mkNode(n.sheet, FK.numToCol(c) + r, n));
-      } else if (T.mode === "prec") {
-        var refs = FK.findRefs(n.formula);
-        var items = await resolveRefs(ctx, { sheet: n.sheet, addr: n.addr, row: b.r1 }, refs);
-        var seen = {};
-        items.forEach(function (it) {
-          if (!it) return;
-          var key = (it.sheet + "!" + it.addr).toUpperCase();
-          if (seen[key]) return;
-          seen[key] = true;
-          kids.push(mkNode(it.sheet, it.addr, n));
-        });
-      } else {
-        var list = null;
-        try {
-          var deps = ctx.workbook.worksheets.getItem(n.sheet).getRange(n.addr).getDirectDependents();
-          deps.load("addresses");
-          await ctx.sync();
-          list = [];
-          deps.addresses.forEach(function (s) {
-            FK.splitAddressList(s).forEach(function (full) {
-              var p = FK.splitSheetAddress(full);
-              list.push({ sheet: p.sheet || n.sheet, addr: p.addr });
-            });
-          });
-        } catch (e) {
-          list = (e && e.code === "ItemNotFound") ? [] : null;
-        }
-        if (list === null) list = await scanDependents(ctx, { sheet: n.sheet, row: b.r1, col: b.c1 });
-        list.slice(0, 300).forEach(function (x) { kids.push(mkNode(x.sheet, x.addr, n)); });
-      }
-      if (kids.length) await fillInfo(ctx, kids);
-      n.kids = kids;
-    });
+  function exprNode(parent, cx, en, info) {
+    var c = core(en), label;
+    if (c.k === "fn") label = c.name;
+    else if (c.k === "missing") label = "<missing>";
+    else label = cx.formula.slice(en.s, en.e).replace(/^_xl(fn|ws)\./i, "");
+    var it = c.k === "ref" ? cx.items[c.ref] : null;
+    var open = false;
+    if (c.k === "fn") open = c.args.length > 0;
+    else if (c.k === "bin" || c.k === "pct") open = true;
+    else if (c.k === "unary") open = !(isLeafExpr(c.x) || core(c.x).k === "ref");
+    else if (c.k === "ref") open = !!(it && it.cellCount === 1 && it.formula);
+    return dnode(parent, { kind: "expr", cx: cx, en: en, c: c, label: label, info: info || "", item: it, canOpen: open });
   }
 
-  function visibleRows() {
-    var out = [];
-    (function walk(n) {
-      out.push(n);
-      if (n.open && n.kids) n.kids.forEach(walk);
-    })(T.root);
+  function exprKids(d) {
+    var c = d.c, cx = d.cx, out = [];
+    if (c.k === "fn") {
+      c.args.forEach(function (a, i) { out.push(exprNode(d, cx, a, argName(c.name, i))); });
+    } else if (c.k === "bin" && group(c.op)) {
+      var g = group(c.op);
+      (function collect(m) {
+        var mc = core(m);
+        if (m.k === "bin" && group(m.op) === g) { collect(m.l); collect(m.r); }
+        else out.push(exprNode(d, cx, m, ""));
+      })(c);
+    } else if (c.k === "bin") {
+      out.push(exprNode(d, cx, c.l, ""));
+      out.push(exprNode(d, cx, c.r, ""));
+    } else if (c.k === "unary" || c.k === "pct") {
+      var x = c.x;
+      while (core(x).k === "unary") x = core(x).x;   // --(...) opens straight to its contents
+      out.push(exprNode(d, cx, x, ""));
+    }
     return out;
   }
 
-  function cellName(n) {
-    return (n.sheet !== T.root.sheet ? n.sheet + "!" : "") + n.addr;
-  }
-
-  // Formula with each reference coloured to match its row below.
-  function formulaHtml(n) {
-    var f = n.formula, refs = FK.findRefs(f), html = "", pos = 0, map = {};
-    (n.kids || []).forEach(function (k, i) { map[(k.sheet + "!" + k.addr).toUpperCase()] = COLORS[i % COLORS.length]; });
-    refs.forEach(function (r) {
-      html += esc(f.slice(pos, r.start));
-      var sh = r.sheet || n.sheet, key = (sh + "!" + (r.addr || "")).toUpperCase();
-      var c = map[key];
-      html += c ? '<b style="color:' + c + '">' + esc(r.text) + "</b>" : esc(r.text);
-      pos = r.end;
-    });
-    return html + esc(f.slice(pos));
-  }
-
-  function renderTree() {
-    var rows = visibleRows();
-    T.rows = rows;
-    var root = T.root;
-    var fb = T.cursor || root;
-    var html = '<div class="fbar"><span class="fx">fx</span><span class="ftxt"><span class="muted">' + esc(cellName(fb)) + "</span>&nbsp; " +
-      (fb.formula ? formulaHtml(fb) : fb.multi ? esc(fb.cells + " cells · " + fb.text) : esc(fb.text) + ' <span class="muted">(typed-in value)</span>') + "</span></div>" +
-      '<div class="tgrid" id="tgrid" tabindex="0"><div class="thead"><span>' + (T.mode === "prec" ? "Precedents" : "Dependents") +
-      '</span><span>Value</span></div>';
-    rows.forEach(function (n, i) {
-      var kidsColor = "";
-      if (n.parent && n.parent === root) kidsColor = COLORS[root.kids.indexOf(n) % COLORS.length];
-      var tog = canOpen(n) ? (n.open ? "▾" : "▸") : "";
-      var what = n.multi ? (n.cells + " cells") : n.formula ? n.formula : "";
-      html += '<div class="trow' + (n === T.cursor ? " cur" : "") + (n === root ? " rootrow" : "") + '" data-i="' + i + '" style="--d:' + Math.min(n.depth, 10) + '">' +
-        '<span class="tg" data-i="' + i + '">' + tog + "</span>" +
-        (kidsColor ? '<span class="dot" style="background:' + kidsColor + '"></span>' : '<span class="dot"></span>') +
-        '<span class="ca">' + esc(cellName(n)) + "</span>" +
-        '<span class="cf" title="' + esc(what) + '">' + esc(what) + "</span>" +
-        '<span class="cv' + (n.err ? " bad" : "") + '">' + esc(n.text) + "</span></div>";
-    });
-    html += "</div>";
-    if (root.kids && !root.kids.length) {
-      html += '<div class="empty pad">' + (T.mode === "prec" ? "No cell references in this formula (links to other files are skipped)." : "No formulas in this workbook use this cell.") + "</div>";
+  // Children directly under a cell row: top-level terms of its formula.
+  function cellKids(d) {
+    var cx = d.cx;
+    if (!cx.formula) return [];
+    if (!cx.root) return cx.refs.map(function (r, i) { return dnode(d, { kind: "expr", cx: cx, en: { k: "ref", ref: i, s: r.start, e: r.end, val: itemVal(cx.items[i]) }, c: { k: "ref", ref: i }, label: r.text, info: "", item: cx.items[i], canOpen: false }); });
+    var c = core(cx.root);
+    if (c.k === "bin" && group(c.op)) {
+      var fake = { parent: d, depth: d.depth, cx: cx, c: c };
+      return exprKids(fake).map(function (k) { k.parent = d; k.depth = d.depth + 1; return k; });
     }
-    html += '<div class="keyhelp">↑↓ move &nbsp;·&nbsp; → open &nbsp;·&nbsp; ← close &nbsp;·&nbsp; Esc back to start</div>';
-    $("traceOut").innerHTML = html;
+    return [exprNode(d, cx, cx.root, "")];
+  }
 
-    var grid = $("tgrid");
-    grid.addEventListener("keydown", onTreeKey);
-    var trs = grid.querySelectorAll(".trow");
-    for (var i = 0; i < trs.length; i++) {
-      trs[i].addEventListener("click", function (ev) {
-        var idx = +ev.currentTarget.getAttribute("data-i");
-        if (ev.target.classList.contains("tg")) { guard(toggle)(T.rows[idx]); return; }
-        guard(selectRow)(T.rows[idx]);
+  async function openNode(d) {
+    if (!d.kids) {
+      if (d.kind === "cell") d.kids = cellKids(d);
+      else if (d.kind === "dep") d.kids = await depKids(d);
+      else if (d.c.k === "ref") {
+        var it = d.item;
+        await Excel.run(async function (ctx) {
+          var cx = await makeCx(ctx, it.sheet, it.addr);
+          var holder = { depth: d.depth, cx: cx };
+          d.kids = cellKids(holder).map(function (k) { k.parent = d; k.depth = d.depth + 1; return k; });
+        });
+      } else d.kids = exprKids(d);
+    }
+    d.open = true;
+  }
+
+  // ---- values / locations for display
+
+  function fmtX(v) {
+    if (v === undefined) return "?";
+    if (FK.isErr(v)) return v.err;
+    if (FK.isRange(v)) return v.filter ? "<filter>" : "<array>";
+    if (v && v.missing) return "";
+    if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+    if (typeof v === "number") {
+      var a = Math.abs(v);
+      if (Number.isInteger(v)) return v.toLocaleString("en-US");
+      return v.toLocaleString("en-US", { minimumFractionDigits: a >= 100 ? 2 : 0, maximumFractionDigits: a >= 100 ? 2 : a >= 1 ? 3 : 4 });
+    }
+    return String(v);
+  }
+
+  function valueText(d) {
+    if (d.kind === "cell" || d.kind === "dep") return d.cx ? d.cx.text : d.text;
+    var c = d.c, v = d.en.val;
+    if (c.k === "missing") return d.parent && d.parent.c && d.parent.c.name === "OFFSET" ? "0" : "";
+    if (c.k === "ref" && d.item && d.item.cellCount === 1 && d.item.text && d.item.text.indexOf("##") < 0) return d.item.text;
+    if (c.k === "str") return String(v);
+    return fmtX(v);
+  }
+
+  function locOf(d) {
+    if (d.kind === "cell" || d.kind === "dep") return { sheet: d.cx ? d.cx.sheet : d.sheet, addr: d.cx ? d.cx.addr : d.addr };
+    var l = d.en.loc;
+    if (!l && d.c.k === "ref" && d.item) return { sheet: d.item.sheet, addr: cleanAddr(d.item.addr) };
+    return l ? { sheet: l.sheet, addr: FK.locAddr(l) } : null;
+  }
+
+  // ---- rendering
+
+  function visible() {
+    var out = [];
+    (function walk(d) { out.push(d); if (d.open && d.kids) d.kids.forEach(walk); })(X.root);
+    return out;
+  }
+
+  function guides(d) {
+    // tree connector pieces for each level: "v" (line), " " (blank), "t" (tee), "l" (elbow)
+    var parts = [];
+    var n = d;
+    while (n.parent) {
+      var sibs = n.parent.kids || [], last = sibs[sibs.length - 1] === n;
+      parts.unshift(n === d ? (last ? "l" : "t") : (last ? " " : "v"));
+      n = n.parent;
+    }
+    return parts;
+  }
+
+  function renderX() {
+    var rows = visible();
+    X.rows = rows;
+    var html = "";
+    rows.forEach(function (d, i) {
+      var g = guides(d), ind = "";
+      g.forEach(function (p) { ind += '<span class="g g' + (p === " " ? "b" : p) + '"></span>'; });
+      var pm = d.canOpen ? '<span class="pm" data-i="' + i + '">' + (d.open ? "−" : "+") + "</span>" : '<span class="pm none"></span>';
+      var loc = locOf(d), locTxt = loc ? loc.sheet + "!" + loc.addr : "";
+      var cls = "xr" + (d === X.cur ? " sel" : "") + (d.c && d.c.k === "missing" ? " dim" : "");
+      html += '<div class="' + cls + '" data-i="' + i + '">' +
+        '<span class="xe">' + ind + pm + '<span class="lb">' + esc(d.label) + "</span></span>" +
+        '<span class="xi">' + esc(d.info || "") + "</span>" +
+        '<span class="xv">' + esc(valueText(d)) + "</span>" +
+        '<span class="xl" title="' + esc(locTxt) + '">' + esc(locTxt) + "</span></div>";
+    });
+    $("xbody").innerHTML = html;
+    renderFormulaBox();
+    var body = $("xbody");
+    var els = body.querySelectorAll(".xr");
+    for (var k = 0; k < els.length; k++) {
+      els[k].addEventListener("mousedown", function (ev) {
+        var d = X.rows[+ev.currentTarget.getAttribute("data-i")];
+        if (ev.target.classList.contains("pm")) { ev.preventDefault(); guard(toggleX)(d); return; }
+        guard(selectX)(d);
+      });
+      els[k].addEventListener("dblclick", function (ev) {
+        var d = X.rows[+ev.currentTarget.getAttribute("data-i")];
+        if (d.canOpen) guard(toggleX)(d);
       });
     }
-    var cur = grid.querySelector(".trow.cur");
+    var cur = body.querySelector(".xr.sel");
     if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
   }
 
-  async function toggle(n) {
-    if (!canOpen(n)) return;
-    if (!n.open && !n.kids) { status("Loading…"); await loadKids(n); status(""); }
-    n.open = !n.open;
-    renderTree();
-    focusTree();
+  function renderFormulaBox() {
+    var d = X.cur || X.root, cx = d.cx || (d.kind === "dep" ? null : X.root.cx);
+    var box = $("xformula");
+    if (!box) return;
+    if (d.kind === "dep") { box.innerHTML = esc(d.cx && d.cx.formula || d.text || ""); return; }
+    if (!cx || !cx.formula) { box.innerHTML = esc(cx ? cx.text : ""); return; }
+    var f = cx.formula;
+    if (d.kind === "expr" && d.en && d.en.e > d.en.s) {
+      box.innerHTML = esc(f.slice(0, d.en.s)) + '<span class="hl">' + esc(f.slice(d.en.s, d.en.e)) + "</span>" + esc(f.slice(d.en.e));
+    } else box.innerHTML = esc(f);
   }
 
-  function focusTree() {
-    var g = $("tgrid");
+  async function toggleX(d) {
+    if (!d.canOpen) return;
+    if (d.open) d.open = false;
+    else { status("Loading…"); await openNode(d); status(""); }
+    renderX();
+    focusX();
+  }
+
+  function focusX() {
+    var g = $("xgrid");
     if (g) { try { g.focus({ preventScroll: true }); } catch (e) { g.focus(); } }
   }
 
-  async function selectRow(n) {
-    T.cursor = n;
-    renderTree();
-    focusTree();
-    await navigate({ sheet: n.sheet, addr: n.addr }, !T.originPushed);
-    T.originPushed = true;
+  async function selectX(d) {
+    X.cur = d;
+    renderX();
+    focusX();
+    var loc = locOf(d);
+    if (loc) {
+      await navigate({ sheet: loc.sheet, addr: loc.addr }, !X.pushed);
+      X.pushed = true;
+    }
   }
 
-  function onTreeKey(ev) {
-    var rows = T.rows, i = rows.indexOf(T.cursor), n = T.cursor;
-    if (ev.key === "ArrowDown") { if (i < rows.length - 1) guard(selectRow)(rows[i + 1]); }
-    else if (ev.key === "ArrowUp") { if (i > 0) guard(selectRow)(rows[i - 1]); }
-    else if (ev.key === "ArrowRight") {
-      if (n && canOpen(n) && !n.open) guard(toggle)(n);
-      else if (n && n.open && n.kids && n.kids.length) guard(selectRow)(n.kids[0]);
-    } else if (ev.key === "ArrowLeft") {
-      if (n && n.open) guard(toggle)(n);
-      else if (n && n.parent) guard(selectRow)(n.parent);
-    } else if (ev.key === "Enter") { if (n) guard(selectRow)(n); }
-    else if (ev.key === "Escape") { guard(goBack)(); }
-    else return;
+  function onXKey(ev) {
+    var rows = X.rows, i = rows.indexOf(X.cur), d = X.cur;
+    switch (ev.key) {
+      case "ArrowDown": if (i < rows.length - 1) guard(selectX)(rows[i + 1]); break;
+      case "ArrowUp": if (i > 0) guard(selectX)(rows[i - 1]); break;
+      case "ArrowRight": case "+":
+        if (d && d.canOpen && !d.open) guard(toggleX)(d);
+        else if (d && d.open && d.kids && d.kids.length) guard(selectX)(d.kids[0]);
+        break;
+      case "ArrowLeft": case "-":
+        if (d && d.open) guard(toggleX)(d);
+        else if (d && d.parent) guard(selectX)(d.parent);
+        break;
+      case "Enter": guard(okX)(); break;
+      case "Escape": guard(goBack)(); break;
+      default: return;
+    }
     ev.preventDefault();
   }
 
-  async function startTree(mode) {
-    showTab("trace");
-    await showPane();
+  // ---- dependents (same window, rows are cells)
+
+  async function depKids(d) {
+    var kids = [];
     await Excel.run(async function (ctx) {
-      var a = await getActive(ctx);
-      T.mode = mode;
-      T.root = mkNode(a.sheet, a.addr, null);
-      await fillInfo(ctx, [T.root]);
+      var sheet = d.cx.sheet, addr = d.cx.addr, b = FK.parseA1(addr), list = null;
+      try {
+        var deps = ctx.workbook.worksheets.getItem(sheet).getRange(addr).getDirectDependents();
+        deps.load("addresses");
+        await ctx.sync();
+        list = [];
+        deps.addresses.forEach(function (s) {
+          FK.splitAddressList(s).forEach(function (full) {
+            var p = FK.splitSheetAddress(full);
+            var bb = FK.parseA1(p.addr);
+            if (!bb) return;
+            for (var r = bb.r1; r <= bb.r2 && list.length < 300; r++)
+              for (var c = bb.c1; c <= bb.c2 && list.length < 300; c++) list.push({ sheet: p.sheet || sheet, addr: FK.numToCol(c) + r });
+          });
+        });
+      } catch (e) {
+        list = (e && e.code === "ItemNotFound") ? [] : null;
+      }
+      if (list === null) list = await scanDependents(ctx, { sheet: sheet, row: b.r1, col: b.c1 });
+      for (var i = 0; i < list.length && i < 300; i++) {
+        var cx = { sheet: list[i].sheet, addr: list[i].addr };
+        var r = ctx.workbook.worksheets.getItem(cx.sheet).getRange(cx.addr);
+        r.load("formulas,values,valueTypes,text");
+        kids.push({ cx: cx, r: r });
+      }
+      await ctx.sync();
     });
-    T.cursor = T.root;
-    T.originPushed = false;
-    if (canOpen(T.root)) { await loadKids(T.root); T.root.open = true; }
-    else T.root.kids = [];
-    renderTree();
-    focusTree();
+    return kids.map(function (k) {
+      var f = k.r.formulas[0][0];
+      k.cx.formula = typeof f === "string" ? f : "";
+      k.cx.text = fmtValue(k.r.values[0][0], k.r.valueTypes[0][0], k.r.text[0][0]);
+      return dnode(d, { kind: "dep", cx: k.cx, label: k.cx.addr, info: k.cx.formula, canOpen: true });
+    });
   }
 
-  async function tracePrecedents() { await startTree("prec"); }
-  async function traceDependents() { await startTree("dep"); }
-  async function explore() { await startTree("prec"); }
+  // ---- entry points
+
+  async function startX(mode) {
+    showTab("trace");
+    await showPane();
+    X.mode = mode;
+    await Excel.run(async function (ctx) {
+      var a = await getActive(ctx);
+      if (mode === "prec") {
+        var cx = await makeCx(ctx, a.sheet, a.addr);
+        X.root = dnode(null, { kind: "cell", cx: cx, label: cx.addr, info: "", canOpen: !!cx.formula });
+      } else {
+        var cx2 = { sheet: a.sheet, addr: a.addr, formula: a.formula.charAt(0) === "=" ? a.formula : "", text: fmtValue(a.value, a.type, a.text) };
+        X.root = dnode(null, { kind: "dep", cx: cx2, label: cx2.addr, info: "", canOpen: true });
+      }
+    });
+    $("xtitle").textContent = mode === "prec" ? "FormulaKit Explorer" : "FormulaKit Explorer — Dependents";
+    $("xheadInfo").textContent = mode === "prec" ? "Info" : "Formula";
+    X.cur = X.root;
+    X.pushed = false;
+    if (X.root.canOpen) await openNode(X.root);
+    renderX();
+    focusX();
+  }
+
+  async function okX() {
+    X.pushed = false;
+    S.back = [];
+    try { await Office.addin.hide(); } catch (e) { /* older Excel */ }
+  }
+
+  async function tracePrecedents() { await startX("prec"); }
+  async function traceDependents() { await startX("dep"); }
+  async function explore() { await startX("prec"); }
 
   async function jumpNext() {
-    if (!T.root) { await tracePrecedents(); return; }
-    var i = T.rows.indexOf(T.cursor);
-    await selectRow(T.rows[(i + 1) % T.rows.length]);
+    if (!X.root) { await tracePrecedents(); return; }
+    var i = X.rows.indexOf(X.cur);
+    await selectX(X.rows[(i + 1) % X.rows.length]);
   }
 
   async function goBack() {
@@ -580,8 +760,8 @@
     if (!item) { status("Nothing to go back to."); return; }
     await navigate(item, false);
     S.originPushed = false;
-    T.originPushed = false;
-    if (T.root) { T.cursor = T.root; renderTree(); }
+    X.pushed = false;
+    if (X.root) { X.cur = X.root; renderX(); }
   }
 
   // ------------------------------------------------------------------ Model map
@@ -872,6 +1052,26 @@
       html += "<tr><td>" + esc(k[0]) + "</td><td><kbd>⌘ ⌥ " + k[1] + "</kbd></td></tr>";
     });
     if ($("keysTable")) $("keysTable").innerHTML = html;
+
+    // explorer window
+    if ($("xgrid")) $("xgrid").addEventListener("keydown", onXKey);
+    if ($("bOK")) $("bOK").addEventListener("click", guard(okX));
+    var menu = $("xmenu");
+    if ($("bMore")) $("bMore").addEventListener("click", function (ev) { ev.stopPropagation(); menu.classList.toggle("on"); });
+    document.addEventListener("click", function () { if (menu) menu.classList.remove("on"); });
+    var acts = {
+      prec: tracePrecedents, dep: traceDependents, back: goBack,
+      map: function () { showTab("map"); }, format: function () { showTab("format"); }, keys: function () { showTab("keys"); }
+    };
+    var mb = menu ? menu.querySelectorAll("button") : [];
+    for (var m = 0; m < mb.length; m++) {
+      mb[m].addEventListener("click", function (ev) {
+        menu.classList.remove("on");
+        guard(acts[ev.currentTarget.getAttribute("data-act")])();
+      });
+    }
+    var backs = document.querySelectorAll("[data-back]");
+    for (var q = 0; q < backs.length; q++) backs[q].addEventListener("click", function () { showTab("trace"); });
   }
 
   Office.onReady(function () {

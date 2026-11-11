@@ -520,7 +520,36 @@
     }
   }
 
+  function multi(v) { return isRange(v) && (v.range.length > 1 || v.range[0].length > 1); }
+
+  // Element-by-element maths when either side is a multi-cell range.
   function binop(op, l, r) {
+    if (!multi(l) && !multi(r)) return binop1(op, l, r);
+    if (l === undefined || r === undefined) return undefined;
+    var gl = isRange(l) ? l.range : [[l]], gr = isRange(r) ? r.range : [[r]];
+    var R = Math.max(gl.length, gr.length), C = Math.max(gl[0].length, gr[0].length), out = [];
+    function at(g, i, j) {
+      var ii = g.length === 1 ? 0 : i, jj = g[0].length === 1 ? 0 : j;
+      if (ii >= g.length || jj >= g[0].length) return E("#N/A");
+      var x = g[ii][jj];
+      return x === "" ? 0 : x;
+    }
+    for (var i = 0; i < R; i++) {
+      var row = [];
+      for (var j = 0; j < C; j++) {
+        var v = binop1(op, at(gl, i, j), at(gr, i, j));
+        row.push(isErr(v) ? v.err : v);
+      }
+      out.push(row);
+    }
+    return { range: out, arr: true, filter: PREC[op] === 1 };
+  }
+
+  function mapArr(v, fn) {
+    return { range: v.range.map(function (row) { return row.map(function (x) { var y = fn(x === "" ? 0 : x); return isErr(y) ? y.err : y; }); }), arr: true };
+  }
+
+  function binop1(op, l, r) {
     if (op === "&") {
       var s1 = toStr(l), s2 = toStr(r);
       if (s1 === undefined || s2 === undefined) return undefined;
@@ -646,36 +675,349 @@
     return undefined;
   }
 
-  // Evaluates every node (sets node.val). getRef(i) returns the value for refs[i].
-  function evalTree(node, getRef) {
+  // ---- more functions (lookups, conditional sums, dates, text)
+
+  function grid(v) {
+    if (isRange(v)) return v.range;
+    v = scalar(v);
+    return [[v]];
+  }
+  function flat(v) { return [].concat.apply([], grid(v)); }
+
+  function cmpOp(op, a, b) {
+    switch (op) {
+      case "=": return a === b;
+      case "<>": return a !== b;
+      case "<": return a < b;
+      case ">": return a > b;
+      case "<=": return a <= b;
+      default: return a >= b;
+    }
+  }
+
+  function wildRe(s) {
+    return new RegExp("^" + s.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
+  }
+
+  function critFn(c) {
+    c = scalar(c);
+    if (typeof c === "number") return function (v) { return typeof v === "number" ? v === c : (v !== "" && v != null && +v === c); };
+    if (typeof c === "boolean") return function (v) { return v === c; };
+    var m = /^(<=|>=|<>|<|>|=)?([\s\S]*)$/.exec(String(c == null ? "" : c)), op = m[1] || "=", rhs = m[2];
+    var num = rhs !== "" && !isNaN(+rhs) ? +rhs : null;
+    if (num !== null) {
+      return function (v) {
+        if (typeof v !== "number") return op === "<>";
+        return cmpOp(op, v, num);
+      };
+    }
+    if (rhs === "") return function (v) { var e = v === "" || v == null; return op === "<>" ? !e : e; };
+    var re = /[*?]/.test(rhs) ? wildRe(rhs) : null, low = rhs.toLowerCase();
+    return function (v) {
+      var sv = String(v == null ? "" : v);
+      if (re && (op === "=" || op === "<>")) return op === "<>" ? !re.test(sv) : re.test(sv);
+      if (typeof v === "number") return op === "<>";
+      return cmpOp(op, sv.toLowerCase(), low);
+    };
+  }
+
+  function same(a, b) {
+    if (typeof a === "string" && typeof b === "string") return a.toLowerCase() === b.toLowerCase();
+    return a === b;
+  }
+
+  // position (0-based) of lv in arr; type 0 exact, 1 largest <=, -1 smallest >=
+  function findPos(lv, arr, type) {
+    lv = scalar(lv);
+    var i;
+    if (type === 0) {
+      var re = typeof lv === "string" && /[*?]/.test(lv) ? wildRe(lv) : null;
+      for (i = 0; i < arr.length; i++) {
+        if (re ? (typeof arr[i] === "string" && re.test(arr[i])) : same(arr[i], lv)) return i;
+      }
+      return -1;
+    }
+    var best = -1;
+    for (i = 0; i < arr.length; i++) {
+      var x = arr[i];
+      if (typeof x !== typeof lv || x === "") continue;
+      var xx = typeof x === "string" ? x.toLowerCase() : x, ll = typeof lv === "string" ? lv.toLowerCase() : lv;
+      if (type === 1 ? xx <= ll : xx >= ll) best = i;
+      else if (type === 1) break;
+    }
+    return best;
+  }
+
+  var EPOCH = Date.UTC(1899, 11, 30);
+  function toSerial(y, m, d) { return Math.round((Date.UTC(y, m, d) - EPOCH) / 86400000); }
+  function fromSerial(n) { var dt = new Date(EPOCH + Math.floor(n) * 86400000); return { y: dt.getUTCFullYear(), m: dt.getUTCMonth(), d: dt.getUTCDate() }; }
+
+  function ifsAgg(a, start, mode) {
+    // a = [target?, r1, c1, r2, c2...] ; start = index of first criteria range
+    var tgt = start === 1 ? flat(a[0]) : null, n = null, tests = [];
+    for (var i = start; i + 1 < a.length; i += 2) {
+      if (a[i] === undefined || a[i + 1] === undefined) return undefined;
+      var r = flat(a[i]);
+      if (n === null) n = r.length; else if (r.length !== n) return E("#VALUE!");
+      tests.push({ r: r, f: critFn(a[i + 1]) });
+    }
+    if (tgt && tgt.length !== n) return E("#VALUE!");
+    var sum = 0, cnt = 0, mx = null, mn = null;
+    for (var k = 0; k < n; k++) {
+      var ok = tests.every(function (t) { return t.f(t.r[k]); });
+      if (!ok) continue;
+      if (!tgt) { cnt++; continue; }
+      var v = tgt[k];
+      if (typeof v === "number") { sum += v; cnt++; mx = mx === null ? v : Math.max(mx, v); mn = mn === null ? v : Math.min(mn, v); }
+    }
+    if (mode === "count") return cnt;
+    if (mode === "sum") return sum;
+    if (mode === "avg") return cnt ? sum / cnt : E("#DIV/0!");
+    if (mode === "max") return mx === null ? 0 : mx;
+    return mn === null ? 0 : mn;
+  }
+
+  function callFn2(name, a) {
+    var i, x, g, r, c, p;
+    function num(k, dflt) { var v = a[k]; if (v === undefined) return undefined; if (v && v.missing) return dflt; return toNum(v); }
+    switch (name) {
+      case "MATCH":
+        if (a[0] === undefined || a[1] === undefined) return undefined;
+        var t = a.length > 2 ? num(2, 1) : 1;
+        if (typeof t !== "number") return t;
+        p = findPos(a[0], flat(a[1]), t > 0 ? 1 : t < 0 ? -1 : 0);
+        return p < 0 ? E("#N/A") : p + 1;
+      case "VLOOKUP": case "HLOOKUP":
+        if (a[0] === undefined || a[1] === undefined) return undefined;
+        g = grid(a[1]);
+        if (name === "HLOOKUP") g = g[0].map(function (_, j) { return g.map(function (row) { return row[j]; }); });
+        c = num(2, 1);
+        if (typeof c !== "number") return c;
+        var approx = a.length > 3 && !(a[3] && a[3].missing) ? toBool(a[3]) : true;
+        if (approx === undefined || isErr(approx)) return approx;
+        p = findPos(a[0], g.map(function (row) { return row[0]; }), approx ? 1 : 0);
+        if (p < 0) return E("#N/A");
+        if (c < 1 || c > g[0].length) return E("#REF!");
+        return g[p][c - 1] === "" ? 0 : g[p][c - 1];
+      case "XLOOKUP":
+        if (a[0] === undefined || a[1] === undefined || a[2] === undefined) return undefined;
+        var look = flat(a[1]), mm = a.length > 4 ? num(4, 0) : 0;
+        if (typeof mm !== "number") return mm;
+        p = findPos(a[0], look, mm === 0 || mm === 2 ? 0 : mm === -1 ? 1 : -1);
+        if (p < 0) return a.length > 3 && !(a[3] && a[3].missing) ? scalar(a[3]) : E("#N/A");
+        g = grid(a[2]);
+        if (g.length === look.length && g[0].length > 1) return { range: [g[p]] };
+        x = flat(a[2])[p];
+        return x === "" ? 0 : x;
+      case "SUMIF": case "AVERAGEIF":
+        if (a.length === 2) return ifsAgg([a[0], a[0], a[1]], 1, name === "SUMIF" ? "sum" : "avg");
+        return ifsAgg([a[2], a[0], a[1]], 1, name === "SUMIF" ? "sum" : "avg");
+      case "COUNTIF": return ifsAgg([a[0], a[1]], 0, "count");
+      case "SUMIFS": return ifsAgg(a, 1, "sum");
+      case "AVERAGEIFS": return ifsAgg(a, 1, "avg");
+      case "MAXIFS": return ifsAgg(a, 1, "max");
+      case "MINIFS": return ifsAgg(a, 1, "min");
+      case "COUNTIFS": return ifsAgg(a, 0, "count");
+      case "COUNTA":
+        var cnt = 0;
+        for (i = 0; i < a.length; i++) { if (a[i] === undefined) return undefined; flat(a[i]).forEach(function (v) { if (v !== "" && v != null) cnt++; }); }
+        return cnt;
+      case "IFNA":
+        if (a[0] === undefined) return undefined;
+        x = scalar(a[0]);
+        return isErr(x) && x.err === "#N/A" ? scalar(a[1]) : x;
+      case "NA": return E("#N/A");
+      case "TRUE": return true;
+      case "FALSE": return false;
+      case "SIGN": x = toNum(a[0]); return typeof x === "number" ? (x > 0 ? 1 : x < 0 ? -1 : 0) : x;
+      case "EXP": x = toNum(a[0]); return typeof x === "number" ? Math.exp(x) : x;
+      case "LN": x = toNum(a[0]); return typeof x === "number" ? (x > 0 ? Math.log(x) : E("#NUM!")) : x;
+      case "LOG10": x = toNum(a[0]); return typeof x === "number" ? (x > 0 ? Math.log(x) / Math.LN10 : E("#NUM!")) : x;
+      case "DATE":
+        var y = toNum(a[0]), m = toNum(a[1]), d = toNum(a[2]);
+        if ([y, m, d].some(function (q) { return typeof q !== "number"; })) return [y, m, d].filter(function (q) { return typeof q !== "number"; })[0];
+        if (y < 1900) y += 1900;
+        return toSerial(y, m - 1, d);
+      case "YEAR": case "MONTH": case "DAY":
+        x = toNum(a[0]); if (typeof x !== "number") return x;
+        var dt = fromSerial(x);
+        return name === "YEAR" ? dt.y : name === "MONTH" ? dt.m + 1 : dt.d;
+      case "EOMONTH": case "EDATE":
+        x = toNum(a[0]); var k = toNum(a[1]);
+        if (typeof x !== "number") return x;
+        if (typeof k !== "number") return k;
+        var s = fromSerial(x);
+        if (name === "EOMONTH") return toSerial(s.y, s.m + Math.trunc(k) + 1, 0);
+        var last = new Date(Date.UTC(s.y, s.m + Math.trunc(k) + 1, 0)).getUTCDate();
+        return toSerial(s.y, s.m + Math.trunc(k), Math.min(s.d, last));
+      case "LEN": x = toStr(a[0]); return typeof x === "string" ? x.length : x;
+      case "UPPER": x = toStr(a[0]); return typeof x === "string" ? x.toUpperCase() : x;
+      case "LOWER": x = toStr(a[0]); return typeof x === "string" ? x.toLowerCase() : x;
+      case "TRIM": x = toStr(a[0]); return typeof x === "string" ? x.trim().replace(/\s+/g, " ") : x;
+      case "LEFT": case "RIGHT":
+        x = toStr(a[0]); var nn = a.length > 1 ? num(1, 1) : 1;
+        if (typeof x !== "string") return x;
+        if (typeof nn !== "number") return nn;
+        return name === "LEFT" ? x.slice(0, nn) : (nn ? x.slice(-nn) : "");
+      case "MID":
+        x = toStr(a[0]); var st = toNum(a[1]), ln = toNum(a[2]);
+        if (typeof x !== "string") return x;
+        if (typeof st !== "number" || typeof ln !== "number") return undefined;
+        return x.substr(st - 1, ln);
+      case "CONCATENATE": case "CONCAT":
+        var out = "";
+        for (i = 0; i < a.length; i++) {
+          if (a[i] === undefined) return undefined;
+          var parts = flat(a[i]);
+          for (var q = 0; q < parts.length; q++) { var ps = toStr(parts[q]); if (isErr(ps)) return ps; out += ps; }
+        }
+        return out;
+      case "ISNUMBER": if (a[0] === undefined) return undefined; return typeof scalar(a[0]) === "number";
+      case "ISTEXT": if (a[0] === undefined) return undefined; return typeof scalar(a[0]) === "string";
+      case "ISERROR": if (a[0] === undefined) return undefined; return isErr(scalar(a[0]));
+      case "ISERR": if (a[0] === undefined) return undefined; x = scalar(a[0]); return isErr(x) && x.err !== "#N/A";
+      case "ISNA": if (a[0] === undefined) return undefined; x = scalar(a[0]); return isErr(x) && x.err === "#N/A";
+      case "NPV":
+        var rate = toNum(a[0]); if (typeof rate !== "number") return rate;
+        var vals = nums(a.slice(1)); if (!Array.isArray(vals)) return vals;
+        return vals.reduce(function (s2, v, j) { return s2 + v / Math.pow(1 + rate, j + 1); }, 0);
+      case "PMT":
+        var rt = toNum(a[0]), np = toNum(a[1]), pv = toNum(a[2]), fv = a.length > 3 ? num(3, 0) : 0, ty = a.length > 4 ? num(4, 0) : 0;
+        if ([rt, np, pv, fv, ty].some(function (q) { return typeof q !== "number"; })) return undefined;
+        if (rt === 0) return -(pv + fv) / np;
+        var f1 = Math.pow(1 + rt, np);
+        return -(rt * (pv * f1 + fv)) / ((1 + rt * ty) * (f1 - 1));
+      case "AVERAGEA": case "MEDIAN":
+        var ns = nums(a); if (!Array.isArray(ns)) return ns;
+        if (!ns.length) return E("#DIV/0!");
+        var srt = ns.slice().sort(function (u, w) { return u - w; }), h = Math.floor(srt.length / 2);
+        return srt.length % 2 ? srt[h] : (srt[h - 1] + srt[h]) / 2;
+      case "ROWS": case "COLUMNS":
+        if (a[0] === undefined) return undefined;
+        g = grid(a[0]);
+        return name === "ROWS" ? g.length : g[0].length;
+    }
+    return undefined;
+  }
+
+  // Where a node points: {sheet, b:{r1,c1,r2,c2}}.
+  function locKey(loc) { return (loc.sheet + "!" + locAddr(loc)).toUpperCase(); }
+  function locAddr(loc) {
+    var b = loc.b, a1 = numToCol(b.c1) + b.r1;
+    return b.r1 === b.r2 && b.c1 === b.c2 ? a1 : a1 + ":" + numToCol(b.c2) + b.r2;
+  }
+
+  // Evaluates every node (sets node.val and, where it points at cells, node.loc).
+  // env: function getRef(i)  or  {getRef(i), refLoc(i), cellValue(loc)}.
+  function evalTree(node, env) {
+    if (typeof env === "function") env = { getRef: env };
     var v, i;
     switch (node.k) {
       case "num": case "str": case "bool": v = node.v; break;
       case "err": v = E(node.v); break;
       case "missing": v = { missing: true }; break;
       case "unk": v = undefined; break;
-      case "ref": v = getRef(node.ref); break;
-      case "paren": v = evalTree(node.x, getRef); break;
+      case "ref":
+        v = env.getRef(node.ref);
+        node.loc = env.refLoc ? env.refLoc(node.ref) : null;
+        break;
+      case "paren":
+        v = evalTree(node.x, env);
+        node.loc = node.x.loc;
+        break;
       case "unary":
-        var x = toNum(evalTree(node.x, getRef));
+        var ux = evalTree(node.x, env);
+        if (multi(ux)) {
+          v = mapArr(ux, function (q) { var t = toNum(q); return typeof t === "number" ? (node.op === "-" ? -t : t) : t; });
+          if (ux.filter) v.filter = true;
+          break;
+        }
+        var x = toNum(ux);
         v = typeof x === "number" ? (node.op === "-" ? -x : x) : x;
+        if (node.x.k === "ref") node.loc = node.x.loc;
         break;
       case "pct":
-        var y = toNum(evalTree(node.x, getRef));
+        var y = toNum(evalTree(node.x, env));
         v = typeof y === "number" ? y / 100 : y;
         break;
       case "bin":
-        v = binop(node.op, evalTree(node.l, getRef), evalTree(node.r, getRef));
+        v = binop(node.op, evalTree(node.l, env), evalTree(node.r, env));
         break;
       case "fn":
         var args = [];
-        for (i = 0; i < node.args.length; i++) args.push(evalTree(node.args[i], getRef));
-        v = callFn(node.name, args);
+        for (i = 0; i < node.args.length; i++) args.push(evalTree(node.args[i], env));
+        v = evalFn(node, args, env);
         break;
     }
     node.val = v;
     return v;
   }
+
+  function evalFn(node, a, env) {
+    var name = node.name, an = node.args, v, k;
+    if (name === "OFFSET") {
+      var base = an[0] && an[0].loc;
+      if (!base) return undefined;
+      function n(k2, d) { if (!an[k2] || (a[k2] && a[k2].missing)) return d; return toNum(a[k2]); }
+      var rows = n(1, 0), cols = n(2, 0), h = n(3, base.b.r2 - base.b.r1 + 1), w = n(4, base.b.c2 - base.b.c1 + 1);
+      if ([rows, cols, h, w].some(function (q) { return typeof q !== "number"; })) {
+        return [rows, cols, h, w].filter(function (q) { return isErr(q); })[0];
+      }
+      var b = { r1: base.b.r1 + rows, c1: base.b.c1 + cols };
+      b.r2 = b.r1 + h - 1; b.c2 = b.c1 + w - 1;
+      if (b.r1 < 1 || b.c1 < 1 || h < 1 || w < 1 || b.r2 > MAX_ROW || b.c2 > MAX_COL) return E("#REF!");
+      node.loc = { sheet: base.sheet, b: b };
+      return env.cellValue ? env.cellValue(node.loc) : undefined;
+    }
+    if (name === "INDEX") {
+      if (a[0] === undefined) return undefined;
+      var g = grid(a[0]), oneRow = g.length === 1;
+      var r = a.length > 1 && !(a[1] && a[1].missing) ? toNum(a[1]) : 0;
+      var c = a.length > 2 && !(a[2] && a[2].missing) ? toNum(a[2]) : 0;
+      if (typeof r !== "number") return r;
+      if (typeof c !== "number") return c;
+      if (a.length === 2 && oneRow) { c = r; r = 1; }
+      if (r === 0 && g.length === 1) r = 1;
+      if (c === 0 && g[0].length === 1) c = 1;
+      if (r < 0 || c < 0 || r > g.length || c > g[0].length) return E("#REF!");
+      var bl = an[0].loc;
+      if (r === 0 || c === 0) {
+        if (bl) {
+          node.loc = { sheet: bl.sheet, b: r === 0 ? { r1: bl.b.r1, r2: bl.b.r2, c1: bl.b.c1 + c - 1, c2: bl.b.c1 + c - 1 }
+                                              : { r1: bl.b.r1 + r - 1, r2: bl.b.r1 + r - 1, c1: bl.b.c1, c2: bl.b.c2 } };
+        }
+        return r === 0 ? { range: g.map(function (row) { return [row[c - 1]]; }) } : { range: [g[r - 1]] };
+      }
+      if (bl) node.loc = { sheet: bl.sheet, b: { r1: bl.b.r1 + r - 1, r2: bl.b.r1 + r - 1, c1: bl.b.c1 + c - 1, c2: bl.b.c1 + c - 1 } };
+      v = g[r - 1][c - 1];
+      return v === "" ? 0 : v;
+    }
+    if (name === "IF" || name === "IFERROR" || name === "IFNA" || name === "CHOOSE") {
+      v = name === "CHOOSE" ? null : callFn(name, a);
+      if (name === "CHOOSE") {
+        var idx = toNum(a[0]);
+        if (typeof idx !== "number") return idx;
+        idx = Math.trunc(idx);
+        if (idx < 1 || idx >= a.length) return E("#VALUE!");
+        node.loc = an[idx].loc || null;
+        return scalar(a[idx]) === undefined && !isRange(a[idx]) ? undefined : (isRange(a[idx]) ? a[idx] : scalar(a[idx]));
+      }
+      if (name === "IF") {
+        var cnd = toBool(a[0]);
+        if (typeof cnd === "boolean") { k = cnd ? 1 : 2; if (an[k]) node.loc = an[k].loc || null; }
+      } else if (a[0] !== undefined) {
+        var first = scalar(a[0]);
+        var useAlt = isErr(first) && (name === "IFERROR" || first.err === "#N/A");
+        node.loc = (useAlt ? an[1] && an[1].loc : an[0].loc) || null;
+        if (!useAlt && isRange(a[0])) return a[0];
+      }
+      return v;
+    }
+    v = callFn(name, a);
+    if (v === undefined) v = callFn2(name, a);
+    return v;
+  }
+
 
   // Prefix unqualified addresses inside f.slice(s, e) with the home sheet.
   function qualifySlice(f, refs, s, e, homeSheet) {
@@ -692,8 +1034,8 @@
   }
 
   var api = {
-    parseFormula: parseFormula, evalTree: evalTree, qualifySlice: qualifySlice,
-    isErr: isErr, isRange: isRange, PREC: PREC,
+    parseFormula: parseFormula, evalTree: evalTree, qualifySlice: qualifySlice, locAddr: locAddr, locKey: locKey,
+    isErr: isErr, isRange: isRange, PREC: PREC, multi: multi,
     findRefs: findRefs, functionParts: functionParts, qualify: qualify,
     parseA1: parseA1, overlaps: overlaps, colToNum: colToNum, numToCol: numToCol,
     quoteSheet: quoteSheet, unquoteSheet: unquoteSheet,
