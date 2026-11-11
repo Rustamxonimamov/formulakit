@@ -1020,6 +1020,163 @@
     });
   }
 
+  // ------------------------------------------------------------------ Shortcut editor
+
+  var ACTION_NAMES = [
+    ["FK_PRECEDENTS", "Explore precedents"], ["FK_DEPENDENTS", "Explore dependents"], ["FK_NEXT", "Next row in explorer"],
+    ["FK_BACK", "Back to start"], ["FK_EXPLORE", "Explore (same as precedents)"], ["FK_MAP", "Model map"],
+    ["FK_NUMFMT", "Cycle number format"], ["FK_FONT", "Cycle font colour"], ["FK_AUTOCOLOUR", "Auto-colour"], ["FK_BORDERS", "Cycle borders"]
+  ];
+  var DEFAULT_KEYS = { FK_PRECEDENTS: "P", FK_DEPENDENTS: "U", FK_NEXT: "J", FK_BACK: "B", FK_EXPLORE: "E", FK_MAP: "G",
+                       FK_NUMFMT: "N", FK_FONT: "C", FK_AUTOCOLOUR: "A", FK_BORDERS: "K" };
+  var MAC_RESERVED = ["Command+Q", "Command+W", "Command+H", "Command+M", "Command+Tab", "Command+Space",
+                      "Command+Option+D", "Command+Option+M", "Command+Option+H", "Command+Option+Escape", "Command+Option+Space"];
+  var SC = { cur: {}, ok: false, mac: true, waiting: null, msg: {} };
+
+  function prettyKey(s) {
+    if (!s) return "—";
+    var sym = { Command: "⌘", Cmd: "⌘", Option: "⌥", Alt: "⌥", Ctrl: "⌃", Control: "⌃", Shift: "⇧", Up: "↑", Down: "↓", Left: "←", Right: "→" };
+    return String(s).split("+").map(function (p) { return sym[p] || p.toUpperCase(); }).join("");
+  }
+
+  function supportsKeys() {
+    try { return !!(Office.context.requirements && Office.context.requirements.isSetSupported("KeyboardShortcuts", "1.1")); }
+    catch (e) { return false; }
+  }
+
+  async function loadShortcuts() {
+    SC.mac = /Mac/i.test(navigator.platform || navigator.userAgent || "");
+    SC.ok = supportsKeys();
+    if (SC.ok) {
+      try { SC.cur = (await Office.actions.getShortcuts()) || {}; } catch (e) { SC.ok = false; }
+    }
+    if (!SC.ok) {
+      SC.cur = {};
+      Object.keys(DEFAULT_KEYS).forEach(function (id) { SC.cur[id] = (SC.mac ? "Command+Option+" : "Ctrl+Alt+") + DEFAULT_KEYS[id]; });
+    }
+    refreshKeyLabels();
+    renderKeysPage();
+  }
+
+  function refreshKeyLabels() {
+    var els = document.querySelectorAll("[data-key]");
+    for (var i = 0; i < els.length; i++) els[i].textContent = prettyKey(SC.cur[els[i].getAttribute("data-key")]);
+  }
+
+  function renderKeysPage() {
+    var t = $("keysTable");
+    if (!t) return;
+    var html = "";
+    ACTION_NAMES.forEach(function (a) {
+      var id = a[0], m = SC.msg[id];
+      html += "<tr><td>" + esc(a[1]) + (m ? '<div class="kmsg ' + m.cls + '">' + esc(m.text) + "</div>" : "") +
+        '</td><td class="r"><button class="kbtn' + (SC.waiting === id ? " wait" : "") + '" data-id="' + id + '"' + (SC.ok ? "" : " disabled") + ">" +
+        (SC.waiting === id ? "Press keys…" : esc(prettyKey(SC.cur[id]))) + "</button></td></tr>";
+    });
+    t.innerHTML = html;
+    if (!SC.ok) {
+      t.insertAdjacentHTML("afterend", '<p class="note kmsg err" id="kUnsup">This version of Excel doesn\'t let add-ins change shortcuts. Update Excel to use this.</p>');
+    }
+    var bs = t.querySelectorAll(".kbtn");
+    for (var i = 0; i < bs.length; i++) {
+      bs[i].addEventListener("click", function (ev) {
+        SC.waiting = ev.currentTarget.getAttribute("data-id");
+        SC.msg = {};
+        renderKeysPage();
+        var b = t.querySelector('.kbtn[data-id="' + SC.waiting + '"]');
+        if (b) b.focus();
+      });
+    }
+  }
+
+  function comboFromEvent(ev) {
+    var c = ev.code || "", key = null;
+    if (/^Key[A-Z]$/.test(c)) key = c.slice(3);
+    else if (/^Digit\d$/.test(c)) key = c.slice(5);
+    else if (c === "Minus") key = "-";
+    else if (/^Arrow(Up|Down|Left|Right)$/.test(c)) key = c.slice(5);
+    if (!key) return null;
+    var mods = [];
+    if (SC.mac) {
+      if (ev.ctrlKey) mods.push("Ctrl");
+      if (ev.metaKey) mods.push("Command");
+      if (ev.altKey) mods.push("Option");
+      if (ev.shiftKey) mods.push("Shift");
+    } else {
+      if (ev.ctrlKey) mods.push("Ctrl");
+      if (ev.altKey) mods.push("Alt");
+      if (ev.shiftKey) mods.push("Shift");
+    }
+    if (!mods.length) return { error: "Add ⌘, ⌥ or ⌃ — a single key on its own can't be a shortcut." };
+    if (mods.length === 1 && mods[0] === "Shift") return { error: "Shift alone isn't allowed — add ⌘, ⌥ or ⌃." };
+    return { combo: mods.concat(key).join("+") };
+  }
+
+  async function onKeyCapture(ev) {
+    if (!SC.waiting) return;
+    if (["Meta", "Alt", "Control", "Shift"].indexOf(ev.key) >= 0) return;   // wait for the real key
+    ev.preventDefault();
+    ev.stopPropagation();
+    var id = SC.waiting;
+    if (ev.key === "Escape") { SC.waiting = null; renderKeysPage(); return; }
+    var r = comboFromEvent(ev);
+    if (!r) { SC.msg[id] = { cls: "err", text: "Use a letter, number or arrow key." }; renderKeysPage(); return; }
+    if (r.error) { SC.msg[id] = { cls: "err", text: r.error }; renderKeysPage(); return; }
+    var combo = r.combo;
+    if (MAC_RESERVED.indexOf(combo) >= 0) { SC.msg[id] = { cls: "err", text: prettyKey(combo) + " is used by macOS — pick another." }; renderKeysPage(); return; }
+    var clash = Object.keys(SC.cur).filter(function (k) { return k !== id && String(SC.cur[k]).toUpperCase() === combo.toUpperCase(); })[0];
+    if (clash) {
+      var nm = ACTION_NAMES.filter(function (a) { return a[0] === clash; })[0];
+      SC.msg[id] = { cls: "err", text: prettyKey(combo) + " is already used for “" + (nm ? nm[1] : clash) + "”." };
+      renderKeysPage();
+      return;
+    }
+    SC.waiting = null;
+    var note = "";
+    try {
+      var used = await Office.actions.areShortcutsInUse([combo]);
+      if (used && used[0] && used[0].inUse) note = " Excel also uses it — the first time you press it, Excel will ask which to keep.";
+    } catch (e) { /* optional check */ }
+    try {
+      var o = {};
+      o[id] = combo;
+      await Office.actions.replaceShortcuts(o);
+      SC.cur = (await Office.actions.getShortcuts()) || SC.cur;
+      SC.msg[id] = { cls: "ok", text: "Saved: " + prettyKey(SC.cur[id] || combo) + "." + note };
+    } catch (e) {
+      SC.msg[id] = { cls: "err", text: "Excel didn't accept " + prettyKey(combo) + " (" + friendly(e) + ")." };
+    }
+    refreshKeyLabels();
+    renderKeysPage();
+  }
+
+  // Layout-independent preset: digits are the same on Latin and Cyrillic keyboards.
+  var DIGIT_KEYS = { FK_PRECEDENTS: "1", FK_DEPENDENTS: "2", FK_NEXT: "3", FK_BACK: "4", FK_EXPLORE: "5", FK_MAP: "6",
+                     FK_NUMFMT: "7", FK_FONT: "8", FK_AUTOCOLOUR: "9", FK_BORDERS: "0" };
+  async function digitShortcuts() {
+    if (!SC.ok) return;
+    var o = {}, pre = SC.mac ? "Command+Option+" : "Ctrl+Alt+";
+    Object.keys(DIGIT_KEYS).forEach(function (id) { o[id] = pre + DIGIT_KEYS[id]; });
+    await Office.actions.replaceShortcuts(o);
+    SC.cur = (await Office.actions.getShortcuts()) || o;
+    SC.msg = {};
+    refreshKeyLabels();
+    renderKeysPage();
+    status("Shortcuts switched to number keys — they now work on any keyboard layout.");
+  }
+
+  async function resetShortcuts() {
+    if (!SC.ok) return;
+    var o = {};
+    ACTION_NAMES.forEach(function (a) { o[a[0]] = null; });
+    await Office.actions.replaceShortcuts(o);
+    SC.cur = (await Office.actions.getShortcuts()) || {};
+    SC.msg = {};
+    refreshKeyLabels();
+    renderKeysPage();
+    status("Shortcuts reset to defaults.");
+  }
+
   // ------------------------------------------------------------------ Wiring
 
   var ACTIONS = {
@@ -1047,11 +1204,14 @@
     };
     Object.keys(map).forEach(function (id) { if ($(id)) $(id).addEventListener("click", guard(map[id])); });
 
-    var html = "";
-    KEYS.forEach(function (k) {
-      html += "<tr><td>" + esc(k[0]) + "</td><td><kbd>⌘ ⌥ " + k[1] + "</kbd></td></tr>";
-    });
-    if ($("keysTable")) $("keysTable").innerHTML = html;
+    document.addEventListener("keydown", function (ev) {
+      if (!SC.waiting) return;
+      if (["Meta", "Alt", "Control", "Shift"].indexOf(ev.key) < 0) { ev.preventDefault(); ev.stopPropagation(); }
+      guard(onKeyCapture)(ev);
+    }, true);
+    if ($("bKeysReset")) $("bKeysReset").addEventListener("click", guard(resetShortcuts));
+    if ($("bKeysDigits")) $("bKeysDigits").addEventListener("click", guard(digitShortcuts));
+    guard(loadShortcuts)();
 
     // explorer window
     if ($("xgrid")) $("xgrid").addEventListener("keydown", onXKey);
