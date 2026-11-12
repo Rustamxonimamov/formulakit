@@ -411,7 +411,7 @@
     var c = ctx.workbook.worksheets.getItem(sheet).getRange(addr);
     c.load("formulas,values,valueTypes,text,rowIndex");
     await ctx.sync();
-    var cx = { sheet: sheet, addr: cleanAddr(addr), formula: "", text: fmtValue(c.values[0][0], c.valueTypes[0][0], c.text[0][0]),
+    var cx = { sheet: sheet, addr: cleanAddr(addr), formula: "", raw: c.formulas[0][0], text: fmtValue(c.values[0][0], c.valueTypes[0][0], c.text[0][0]),
                refs: [], items: [], root: null, cache: {} };
     var f = c.formulas[0][0];
     if (typeof f === "string" && f.charAt(0) === "=") {
@@ -621,7 +621,8 @@
   function renderFormulaBox() {
     var d = X.cur || X.root, cx = d.cx || (d.kind === "dep" ? null : X.root.cx);
     var box = $("xformula");
-    if (!box) return;
+    if (!box || ED.on) return;
+    box.title = "Click (or press F2) to edit this cell's formula";
     if (d.kind === "dep") { box.innerHTML = esc(d.cx && d.cx.formula || d.text || ""); return; }
     if (!cx || !cx.formula) { box.innerHTML = esc(cx ? cx.text : ""); return; }
     var f = cx.formula;
@@ -667,6 +668,7 @@
         if (d && d.open) guard(toggleX)(d);
         else if (d && d.parent) guard(selectX)(d.parent);
         break;
+      case "F2": startEdit(); break;
       case "Enter": guard(okX)(); break;
       case "Escape": guard(goBack)(); break;
       default: return;
@@ -709,6 +711,7 @@
     return kids.map(function (k) {
       var f = k.r.formulas[0][0];
       k.cx.formula = typeof f === "string" ? f : "";
+      k.cx.raw = f;
       k.cx.text = fmtValue(k.r.values[0][0], k.r.valueTypes[0][0], k.r.text[0][0]);
       return dnode(d, { kind: "dep", cx: k.cx, label: k.cx.addr, info: k.cx.formula, canOpen: true });
     });
@@ -716,30 +719,136 @@
 
   // ---- entry points
 
+  async function buildRoot(mode, sheet, addr) {
+    await Excel.run(async function (ctx) {
+      if (mode === "prec") {
+        var cx = await makeCx(ctx, sheet, addr);
+        X.root = dnode(null, { kind: "cell", cx: cx, label: cx.addr, info: "", canOpen: !!cx.formula });
+      } else {
+        var r = ctx.workbook.worksheets.getItem(sheet).getRange(addr);
+        r.load("formulas,values,valueTypes,text");
+        await ctx.sync();
+        var f = r.formulas[0][0];
+        var cx2 = { sheet: sheet, addr: cleanAddr(addr), raw: f, formula: typeof f === "string" && f.charAt(0) === "=" ? f : "",
+                    text: fmtValue(r.values[0][0], r.valueTypes[0][0], r.text[0][0]) };
+        X.root = dnode(null, { kind: "dep", cx: cx2, label: cx2.addr, info: "", canOpen: true });
+      }
+    });
+    if (X.root.canOpen) await openNode(X.root);
+  }
+
   async function startX(mode) {
     showTab("trace");
     await showPane();
     X.mode = mode;
-    await Excel.run(async function (ctx) {
-      var a = await getActive(ctx);
-      if (mode === "prec") {
-        var cx = await makeCx(ctx, a.sheet, a.addr);
-        X.root = dnode(null, { kind: "cell", cx: cx, label: cx.addr, info: "", canOpen: !!cx.formula });
-      } else {
-        var cx2 = { sheet: a.sheet, addr: a.addr, formula: a.formula.charAt(0) === "=" ? a.formula : "", text: fmtValue(a.value, a.type, a.text) };
-        X.root = dnode(null, { kind: "dep", cx: cx2, label: cx2.addr, info: "", canOpen: true });
-      }
-    });
+    ED.on = false;
+    var a;
+    await Excel.run(async function (ctx) { a = await getActive(ctx); });
+    await buildRoot(mode, a.sheet, a.addr);
     $("xtitle").textContent = mode === "prec" ? "FormulaKit Explorer" : "FormulaKit Explorer — Dependents";
     $("xheadInfo").textContent = mode === "prec" ? "Info" : "Formula";
     X.cur = X.root;
     X.pushed = false;
-    if (X.root.canOpen) await openNode(X.root);
+    renderX();
+    focusX();
+  }
+
+  // ---- editing the formula box (like Excel's formula bar)
+
+  var ED = { on: false, target: null };
+
+  function editTarget() {
+    var d = X.cur || X.root;
+    if (!d) return null;
+    var cx = d.cx || X.root.cx;
+    var raw = cx.raw != null ? cx.raw : cx.formula;
+    return { sheet: cx.sheet, addr: cx.addr, raw: raw == null ? "" : String(raw) };
+  }
+
+  function startEdit() {
+    if (ED.on || !X.root) return;
+    var t = editTarget();
+    if (!t) return;
+    ED.on = true;
+    ED.target = t;
+    var box = $("xformula");
+    box.classList.add("editing");
+    box.innerHTML = '<div class="edlbl">Editing <b>' + esc(t.sheet + "!" + t.addr) + "</b> — Enter saves · Esc cancels · ⇧Enter new line</div>" +
+      '<textarea id="xedit" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>';
+    var ta = $("xedit");
+    ta.value = t.raw;
+    function fit() { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 220) + "px"; }
+    fit();
+    ta.addEventListener("input", fit);
+    ta.addEventListener("keydown", function (ev) {
+      ev.stopPropagation();
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); guard(saveEdit)(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); cancelEdit(); }
+    });
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
+  function cancelEdit() {
+    ED.on = false;
+    var box = $("xformula");
+    if (box) box.classList.remove("editing");
+    renderFormulaBox();
+    focusX();
+  }
+
+  async function saveEdit() {
+    var t = ED.target, ta = $("xedit");
+    if (!t || !ta) return;
+    var txt = ta.value.replace(/\r?\n/g, "\n");
+    try {
+      await Excel.run(async function (ctx) {
+        ctx.workbook.worksheets.getItem(t.sheet).getRange(t.addr).formulas = [[txt]];
+        await ctx.sync();
+      });
+    } catch (e) {
+      status("Excel didn't accept that formula — check brackets, commas and sheet names. (" + friendly(e) + ")", true);
+      ta.focus();
+      return;
+    }
+    ED.on = false;
+    $("xformula").classList.remove("editing");
+    await refreshX();
+    status("Saved " + t.sheet + "!" + t.addr + ".");
+  }
+
+  function pathOf(d) {
+    var p = [];
+    while (d) { p.unshift(d.parent ? d.parent.kids.indexOf(d) : 0); d = d.parent; }
+    return p.join("/");
+  }
+
+  function nodeAt(p) {
+    var idx = p.split("/").map(Number), d = X.root;
+    for (var k = 1; k < idx.length; k++) {
+      if (!d || !d.kids || !d.kids[idx[k]]) return null;
+      d = d.kids[idx[k]];
+    }
+    return d;
+  }
+
+  // Rebuild the tree after an edit, keeping the same rows open.
+  async function refreshX() {
+    var open = visible().filter(function (d) { return d.open; }).map(pathOf);
+    var curPath = X.cur ? pathOf(X.cur) : "0";
+    await buildRoot(X.mode, X.root.cx.sheet, X.root.cx.addr);
+    open.sort(function (a, b) { return a.split("/").length - b.split("/").length; });
+    for (var i = 0; i < open.length; i++) {
+      var d = nodeAt(open[i]);
+      if (d && d.canOpen && !d.open) await openNode(d);
+    }
+    X.cur = nodeAt(curPath) || X.root;
     renderX();
     focusX();
   }
 
   async function okX() {
+    if (ED.on) { await saveEdit(); if (ED.on) return; }
     X.pushed = false;
     S.back = [];
     try { await Office.addin.hide(); } catch (e) { /* older Excel */ }
@@ -1216,6 +1325,7 @@
     // explorer window
     if ($("xgrid")) $("xgrid").addEventListener("keydown", onXKey);
     if ($("bOK")) $("bOK").addEventListener("click", guard(okX));
+    if ($("xformula")) $("xformula").addEventListener("click", function () { if (!ED.on) startEdit(); });
     var menu = $("xmenu");
     if ($("bMore")) $("bMore").addEventListener("click", function (ev) { ev.stopPropagation(); menu.classList.toggle("on"); });
     document.addEventListener("click", function () { if (menu) menu.classList.remove("on"); });

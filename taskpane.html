@@ -62,6 +62,11 @@
     /* formula box */
     .xformula { flex: none; margin-top: 10px; min-height: 64px; max-height: 140px; overflow: auto; background: var(--win); border: 1px solid var(--edge); padding: 4px 5px; font-size: 13px; line-height: 1.35; word-break: break-all; white-space: pre-wrap; }
     .hl { color: var(--link); text-decoration: underline; }
+    .xformula { cursor: text; }
+    .xformula:hover { border-color: #7a7a7a; }
+    .xformula.editing { border: 2px solid var(--focus); padding: 3px 4px; }
+    .edlbl { font-size: 11px; color: #555; margin-bottom: 3px; white-space: normal; word-break: normal; }
+    #xedit { display: block; width: 100%; min-height: 48px; border: 0; outline: 0; resize: none; padding: 0; background: transparent; font: 13px/1.35 var(--font); color: #000; word-break: break-all; }
 
     .xfoot { flex: none; display: flex; justify-content: flex-end; gap: 10px; padding: 10px 0; position: relative; }
     .wbtn { min-width: 110px; height: 32px; background: var(--btn); border: 1px solid var(--btn-edge); border-radius: 4px; cursor: pointer; padding: 0 14px; }
@@ -119,7 +124,7 @@
         <div class="xbody" id="xbody"><div class="empty" style="padding:8px">Select a cell and press ⌘⌥P.</div></div>
       </div>
       <div class="xformula" id="xformula"></div>
-      <div class="xhint">↑↓ move · → / + expand · ← / − collapse · Esc back to start · Enter OK</div>
+      <div class="xhint">↑↓ move · → / + expand · ← / − collapse · F2 or click formula to edit · Esc back · Enter OK</div>
       <div class="xfoot">
         <div class="menu" id="xmenu">
           <button data-act="prec">Explore precedents<kbd data-key="FK_PRECEDENTS">⌘⌥P</kbd></button>
