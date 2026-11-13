@@ -56,14 +56,16 @@
       "action": "FK_PRECEDENTS",
       "key": {
         "default": "Ctrl+Alt+P",
+        "windows": "Ctrl+Q",
         "mac": "Command+Option+P"
       }
     },
     {
       "action": "FK_DEPENDENTS",
       "key": {
-        "default": "Ctrl+Alt+D",
-        "mac": "Command+Option+D"
+        "default": "Ctrl+Alt+U",
+        "windows": "Ctrl+Shift+Q",
+        "mac": "Command+Option+U"
       }
     },
     {
@@ -90,8 +92,8 @@
     {
       "action": "FK_MAP",
       "key": {
-        "default": "Ctrl+Alt+M",
-        "mac": "Command+Option+M"
+        "default": "Ctrl+Alt+G",
+        "mac": "Command+Option+G"
       }
     },
     {

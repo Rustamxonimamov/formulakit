@@ -1144,6 +1144,7 @@
 
   function prettyKey(s) {
     if (!s) return "—";
+    if (!SC.mac) return String(s).replace(/Command|Cmd/g, "Ctrl").replace(/Option/g, "Alt");
     var sym = { Command: "⌘", Cmd: "⌘", Option: "⌥", Alt: "⌥", Ctrl: "⌃", Control: "⌃", Shift: "⇧", Up: "↑", Down: "↓", Left: "←", Right: "→" };
     return String(s).split("+").map(function (p) { return sym[p] || p.toUpperCase(); }).join("");
   }
@@ -1162,6 +1163,7 @@
     if (!SC.ok) {
       SC.cur = {};
       Object.keys(DEFAULT_KEYS).forEach(function (id) { SC.cur[id] = (SC.mac ? "Command+Option+" : "Ctrl+Alt+") + DEFAULT_KEYS[id]; });
+      if (!SC.mac) { SC.cur.FK_PRECEDENTS = "Ctrl+Q"; SC.cur.FK_DEPENDENTS = "Ctrl+Shift+Q"; }
     }
     refreshKeyLabels();
     renderKeysPage();
