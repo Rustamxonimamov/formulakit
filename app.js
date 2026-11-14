@@ -1276,8 +1276,8 @@
     }
     if (!SC.ok) {
       SC.cur = {};
-      // no hot keys come pre-assigned
-      Object.keys(DEFAULT_KEYS).forEach(function (id) { SC.cur[id] = null; });
+      Object.keys(DEFAULT_KEYS).forEach(function (id) { SC.cur[id] = (SC.mac ? "Command+Option+" : "Ctrl+Alt+") + DEFAULT_KEYS[id]; });
+      if (!SC.mac) { SC.cur.FK_PRECEDENTS = "Ctrl+Q"; SC.cur.FK_DEPENDENTS = "Ctrl+Shift+Q"; }
     }
     refreshKeyLabels();
     renderKeysPage();
@@ -1422,7 +1422,7 @@
     SC.msg = {};
     refreshKeyLabels();
     renderKeysPage();
-    status("All hot keys removed.");
+    status("Shortcuts reset to defaults.");
   }
 
   // ------------------------------------------------------------------ Wiring
