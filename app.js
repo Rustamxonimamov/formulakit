@@ -1276,8 +1276,8 @@
     }
     if (!SC.ok) {
       SC.cur = {};
-      Object.keys(DEFAULT_KEYS).forEach(function (id) { SC.cur[id] = (SC.mac ? "Command+Option+" : "Ctrl+Alt+") + DEFAULT_KEYS[id]; });
-      if (!SC.mac) { SC.cur.FK_PRECEDENTS = "Ctrl+Q"; SC.cur.FK_DEPENDENTS = "Ctrl+Shift+Q"; }
+      // no hot keys come pre-assigned
+      Object.keys(DEFAULT_KEYS).forEach(function (id) { SC.cur[id] = null; });
     }
     refreshKeyLabels();
     renderKeysPage();
@@ -1399,7 +1399,7 @@
     SC.msg = {};
     refreshKeyLabels();
     renderKeysPage();
-    status("Shortcuts reset to defaults.");
+    status("All hot keys removed.");
   }
 
   // ------------------------------------------------------------------ Wiring
@@ -1471,7 +1471,12 @@
         Office.actions.associate(id, function () { return guard(ACTIONS[id])(); });
       } catch (e) { console.warn("associate failed", id, e); }
     });
-    try { Office.addin.setStartupBehavior(Office.StartupBehavior.load); } catch (e) { /* older Excel */ }
+    // Auto-load at Excel start: fine on Windows, but on Mac a file-installed add-in isn't active yet
+    // at startup, so auto-load fails with "This add-in is no longer available" and breaks the hot keys.
+    try {
+      var isMac = Office.context && Office.context.platform === Office.PlatformType.Mac;
+      Office.addin.setStartupBehavior(isMac ? Office.StartupBehavior.none : Office.StartupBehavior.load);
+    } catch (e) { /* older Excel */ }
     try {
       Office.addin.onVisibilityModeChanged(function (args) {
         if (args && args.visibilityMode === "Hidden") guard(restoreHighlight)();

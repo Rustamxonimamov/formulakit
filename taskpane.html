@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FormulaKit</title>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-  <script src="parser.js?v=1.3"></script>
-  <script src="app.js?v=1.3"></script>
+  <script src="parser.js?v=1.5"></script>
+  <script src="app.js?v=1.5"></script>
   <style>
     /* Classic Windows dialog look, always light (like the original tool). */
     :root {
@@ -121,7 +121,7 @@
     <section id="tab-trace" class="on">
       <div class="xgrid" id="xgrid" tabindex="0">
         <div class="xhead"><span>Element</span><span id="xheadInfo">Info</span><span class="r">Value</span><span>Location</span></div>
-        <div class="xbody" id="xbody"><div class="empty" style="padding:8px">Select a cell and press ⌘⌥P.</div></div>
+        <div class="xbody" id="xbody"><div class="empty" style="padding:8px">Select a cell and click More ▾ → Explore precedents (or your own hot key).</div></div>
       </div>
       <div class="xformula" id="xformula"></div>
       <div class="xhint">↑↓ move · → / + expand · ← / − collapse · F2 or click formula to edit · Esc back · Enter OK</div>
@@ -171,7 +171,7 @@
         <div class="sub" style="font-size:13px;color:#000;font-weight:600">Keyboard shortcuts</div>
         <p class="note" style="margin-top:0">Click a shortcut, then press the new keys (e.g. ⌘⌥P). Esc cancels. Changes save straight away.</p>
         <table class="keys" id="keysTable"></table>
-        <div class="row" style="margin-top:10px"><button class="btn primary" id="bKeysDigits">Use number keys (⌘⌥1 … ⌘⌥0)</button><button class="btn" id="bKeysReset">Reset all to defaults</button></div>
+        <div class="row" style="margin-top:10px"><button class="btn primary" id="bKeysDigits">Use number keys (⌘⌥1 … ⌘⌥0)</button><button class="btn" id="bKeysReset">Remove all hot keys</button></div>
         <p class="note">Number keys work the same on English and Russian keyboards, so the shortcuts keep working when you switch layout.</p>
         <p class="note">Use ⌘, ⌥ or ⌃ together with a letter or number. Avoid keys macOS already uses, like ⌘Q, ⌘W, ⌘H or ⌘⌥D.</p>
       </div>
