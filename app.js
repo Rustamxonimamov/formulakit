@@ -226,6 +226,16 @@
       }
       var ws = ctx.workbook.worksheets.getItem(item.sheet);
       ws.activate();
+      // Centre the target on screen: touch a cell above-left and one below-right first,
+      // so Excel scrolls the target into the middle whichever direction we come from.
+      var first = FK.parseA1(String(item.addr).split(",")[0]);
+      if (first) {
+        var r = first.r1, c = first.c1;
+        ws.getRange(FK.numToCol(Math.max(1, c - 4)) + Math.max(1, r - 15)).select();
+        await ctx.sync();
+        ws.getRange(FK.numToCol(Math.min(16384, c + 4)) + Math.min(1048576, r + 15)).select();
+        await ctx.sync();
+      }
       if (String(item.addr).indexOf(",") >= 0) ws.getRanges(item.addr).select();   // several separate cells
       else ws.getRange(item.addr).select();
       await ctx.sync();

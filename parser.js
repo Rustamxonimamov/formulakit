@@ -940,10 +940,14 @@
         break;
       case "pct":
         var y = toNum(evalTree(node.x, env));
+        node.loc = node.x.loc || null;
         v = typeof y === "number" ? y / 100 : y;
         break;
       case "bin":
         v = binop(node.op, evalTree(node.l, env), evalTree(node.r, env));
+        // like Arixcel: a calculation that uses exactly one cell points to that cell (e.g. R$30=1 -> R30)
+        var ls = [node.l.loc, node.r.loc].filter(Boolean);
+        node.loc = ls.length === 1 ? ls[0] : null;
         break;
       case "fn":
         var args = [];
