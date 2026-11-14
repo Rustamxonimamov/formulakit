@@ -903,6 +903,8 @@
   // Where a node points: {sheet, b:{r1,c1,r2,c2}}.
   function locKey(loc) { return (loc.sheet + "!" + locAddr(loc)).toUpperCase(); }
   function locAddr(loc) {
+    if (loc.areas) return loc.areas.join(",");
+    if (loc.cells) return loc.cells.slice(0, 60).map(function (c) { return numToCol(c.c) + c.r; }).join(",");
     var b = loc.b, a1 = numToCol(b.c1) + b.r1;
     return b.r1 === b.r2 && b.c1 === b.c2 ? a1 : a1 + ":" + numToCol(b.c2) + b.r2;
   }
@@ -1015,7 +1017,51 @@
     }
     v = callFn(name, a);
     if (v === undefined) v = callFn2(name, a);
+    if (IFS_FN[name] && v !== undefined && !isErr(v)) node.loc = ifsLoc(name, an, a);
+    else if (AGG_FN[name]) node.loc = aggLoc(an);
     return v;
+  }
+
+  // SUM(…), MAX(…) etc.: location = the ranges they read.
+  var AGG_FN = { SUM: 1, PRODUCT: 1, AVERAGE: 1, MIN: 1, MAX: 1, COUNT: 1, COUNTA: 1, MEDIAN: 1, SUMPRODUCT: 1 };
+  function aggLoc(an) {
+    var locs = an.map(function (x) { return x.loc; }).filter(Boolean);
+    if (!locs.length) return null;
+    if (locs.length === 1) return locs[0];
+    var sheet = locs[0].sheet;
+    if (locs.some(function (l) { return l.sheet !== sheet; })) return locs[0];
+    var b = { r1: locs[0].b.r1, c1: locs[0].b.c1, r2: locs[0].b.r2, c2: locs[0].b.c2 };
+    locs.forEach(function (l) { b.r1 = Math.min(b.r1, l.b.r1); b.c1 = Math.min(b.c1, l.b.c1); b.r2 = Math.max(b.r2, l.b.r2); b.c2 = Math.max(b.c2, l.b.c2); });
+    return { sheet: sheet, b: b, areas: locs.map(function (l) { return locAddr(l); }) };
+  }
+
+  // Which cells a SUMIF/SUMIFS/COUNTIFS… actually picks up (like Arixcel's Location).
+  var IFS_FN = { SUMIF: 1, AVERAGEIF: 1, COUNTIF: 1, SUMIFS: 1, AVERAGEIFS: 1, MAXIFS: 1, MINIFS: 1, COUNTIFS: 1 };
+  function ifsLoc(name, an, a) {
+    var tIdx, pairs = [], i;
+    if (name === "SUMIF" || name === "AVERAGEIF") { tIdx = an.length > 2 && !(a[2] && a[2].missing) ? 2 : 0; pairs = [[0, 1]]; }
+    else if (name === "COUNTIF") { tIdx = 0; pairs = [[0, 1]]; }
+    else if (name === "COUNTIFS") { tIdx = 0; for (i = 0; i + 1 < an.length; i += 2) pairs.push([i, i + 1]); }
+    else { tIdx = 0; for (i = 1; i + 1 < an.length; i += 2) pairs.push([i, i + 1]); }
+    return matchLoc(an, pairs, tIdx);
+  }
+
+  // Cells of an[tIdx]'s range at the positions where every (range, criteria) pair matches.
+  function matchLoc(an, pairs, tIdx) {
+    var a = an.map(function (x) { return x ? x.val : undefined; });
+    var tl = an[tIdx] && an[tIdx].loc;
+    if (!tl || !tl.b || a[tIdx] === undefined) return null;
+    if (pairs.some(function (p) { return a[p[0]] === undefined || a[p[1]] === undefined; })) return null;
+    var tests = pairs.map(function (p) { return { r: flat(a[p[0]]), f: critFn(a[p[1]]) }; });
+    var n = tests[0].r.length, w = tl.b.c2 - tl.b.c1 + 1, cells = [];
+    for (var k = 0; k < n; k++) {
+      if (!tests.every(function (t) { return t.f(t.r[k]); })) continue;
+      cells.push({ r: tl.b.r1 + Math.floor(k / w), c: tl.b.c1 + (k % w) });
+    }
+    if (!cells.length) return null;
+    var b = { r1: cells[0].r, c1: cells[0].c, r2: cells[0].r, c2: cells[0].c };
+    cells.forEach(function (c) { b.r1 = Math.min(b.r1, c.r); b.r2 = Math.max(b.r2, c.r); b.c1 = Math.min(b.c1, c.c); b.c2 = Math.max(b.c2, c.c); });
+    return { sheet: tl.sheet, b: b, cells: cells };
   }
 
 
@@ -1035,7 +1081,7 @@
 
   var api = {
     parseFormula: parseFormula, evalTree: evalTree, qualifySlice: qualifySlice, locAddr: locAddr, locKey: locKey,
-    isErr: isErr, isRange: isRange, PREC: PREC, multi: multi,
+    isErr: isErr, isRange: isRange, PREC: PREC, multi: multi, matchLoc: matchLoc,
     findRefs: findRefs, functionParts: functionParts, qualify: qualify,
     parseA1: parseA1, overlaps: overlaps, colToNum: colToNum, numToCol: numToCol,
     quoteSheet: quoteSheet, unquoteSheet: unquoteSheet,

@@ -226,7 +226,8 @@
       }
       var ws = ctx.workbook.worksheets.getItem(item.sheet);
       ws.activate();
-      ws.getRange(item.addr).select();
+      if (String(item.addr).indexOf(",") >= 0) ws.getRanges(item.addr).select();   // several separate cells
+      else ws.getRange(item.addr).select();
       await ctx.sync();
     }).catch(function (e) {
       throw new Error("Couldn't go to " + item.sheet + "!" + item.addr + " — the sheet may be hidden or protected. (" + friendly(e) + ")");
@@ -482,7 +483,13 @@
 
   function exprKids(d) {
     var c = d.c, cx = d.cx, out = [];
-    if (c.k === "fn") {
+    if (c.k === "fn" && IFS_GROUP[c.name]) {
+      var g = IFS_GROUP[c.name](c.args.length);
+      g.forEach(function (item) {
+        if (item.arg !== undefined) { if (c.args[item.arg] && c.args[item.arg].k !== "missing") out.push(exprNode(d, cx, c.args[item.arg], argName(c.name, item.arg))); }
+        else out.push(filterNode(d, cx, c, item.pairs, item.locIdx));
+      });
+    } else if (c.k === "fn") {
       c.args.forEach(function (a, i) { out.push(exprNode(d, cx, a, argName(c.name, i))); });
     } else if (c.k === "bin" && group(c.op)) {
       var g = group(c.op);
@@ -502,6 +509,26 @@
     return out;
   }
 
+  // SUMIF-style functions: the (range, criteria) pairs collapse into one "Filter" row, like Arixcel.
+  function pairsFrom(start, n) { var p = []; for (var i = start; i + 1 < n; i += 2) p.push([i, i + 1]); return p; }
+  var IFS_GROUP = {
+    SUMIF: function (n) { return [{ pairs: [[0, 1]], locIdx: 0 }].concat(n > 2 ? [{ arg: 2 }] : []); },
+    AVERAGEIF: function (n) { return [{ pairs: [[0, 1]], locIdx: 0 }].concat(n > 2 ? [{ arg: 2 }] : []); },
+    COUNTIF: function () { return [{ pairs: [[0, 1]], locIdx: 0 }]; },
+    COUNTIFS: function (n) { return [{ pairs: pairsFrom(0, n), locIdx: 0 }]; },
+    SUMIFS: function (n) { return [{ arg: 0 }, { pairs: pairsFrom(1, n), locIdx: 1 }]; },
+    AVERAGEIFS: function (n) { return [{ arg: 0 }, { pairs: pairsFrom(1, n), locIdx: 1 }]; },
+    MAXIFS: function (n) { return [{ arg: 0 }, { pairs: pairsFrom(1, n), locIdx: 1 }]; },
+    MINIFS: function (n) { return [{ arg: 0 }, { pairs: pairsFrom(1, n), locIdx: 1 }]; }
+  };
+
+  function filterNode(parent, cx, fnNode, pairs, locIdx) {
+    var an = fnNode.args, first = an[pairs[0][0]], last = an[pairs[pairs.length - 1][1]];
+    var loc = FK.matchLoc(an, pairs, locIdx);
+    return dnode(parent, { kind: "filter", cx: cx, fn: fnNode, pairs: pairs, label: "Filter", info: "", canOpen: true,
+                           c: { k: "filter" }, en: { s: first.s, e: last.e, loc: loc } });
+  }
+
   // Children directly under a cell row: top-level terms of its formula.
   function cellKids(d) {
     var cx = d.cx;
@@ -517,7 +544,13 @@
 
   async function openNode(d) {
     if (!d.kids) {
-      if (d.kind === "cell") d.kids = cellKids(d);
+      if (d.kind === "filter") {
+        d.kids = [];
+        d.pairs.forEach(function (p) {
+          d.kids.push(exprNode(d, d.cx, d.fn.args[p[0]], argName(d.fn.name, p[0])));
+          d.kids.push(exprNode(d, d.cx, d.fn.args[p[1]], argName(d.fn.name, p[1])));
+        });
+      } else if (d.kind === "cell") d.kids = cellKids(d);
       else if (d.kind === "dep") d.kids = await depKids(d);
       else if (d.c.k === "ref") {
         var it = d.item;
@@ -548,6 +581,7 @@
   }
 
   function valueText(d) {
+    if (d.kind === "filter") return "<filter>";
     if (d.kind === "cell" || d.kind === "dep") return d.cx ? d.cx.text : d.text;
     var c = d.c, v = d.en.val;
     if (c.k === "missing") return d.parent && d.parent.c && d.parent.c.name === "OFFSET" ? "0" : "";
@@ -591,7 +625,9 @@
       var g = guides(d), ind = "";
       g.forEach(function (p) { ind += '<span class="g g' + (p === " " ? "b" : p) + '"></span>'; });
       var pm = d.canOpen ? '<span class="pm" data-i="' + i + '">' + (d.open ? "−" : "+") + "</span>" : '<span class="pm none"></span>';
-      var loc = locOf(d), locTxt = loc ? loc.sheet + "!" + loc.addr : "";
+      var loc = locOf(d);
+      var rootSheet = X.root && X.root.cx ? X.root.cx.sheet : "";
+      var locTxt = !loc ? "" : (loc.sheet === rootSheet ? loc.addr : loc.sheet + "!" + loc.addr);
       var cls = "xr" + (d === X.cur ? " sel" : "") + (d.c && d.c.k === "missing" ? " dim" : "");
       html += '<div class="' + cls + '" data-i="' + i + '">' +
         '<span class="xe">' + ind + pm + '<span class="lb">' + esc(d.label) + "</span></span>" +
@@ -626,7 +662,7 @@
     if (d.kind === "dep") { box.innerHTML = esc(d.cx && d.cx.formula || d.text || ""); return; }
     if (!cx || !cx.formula) { box.innerHTML = esc(cx ? cx.text : ""); return; }
     var f = cx.formula;
-    if (d.kind === "expr" && d.en && d.en.e > d.en.s) {
+    if ((d.kind === "expr" || d.kind === "filter") && d.en && d.en.e > d.en.s) {
       box.innerHTML = esc(f.slice(0, d.en.s)) + '<span class="hl">' + esc(f.slice(d.en.s, d.en.e)) + "</span>" + esc(f.slice(d.en.e));
     } else box.innerHTML = esc(f);
   }
@@ -737,6 +773,72 @@
     if (X.root.canOpen) await openNode(X.root);
   }
 
+  // ---- optional pink highlight on the start cell (always restored)
+
+  var HL_COLOR = "#F7A8F0";
+  var HL = { on: false, saved: null };
+  function lsGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { if (v == null) window.localStorage.removeItem(k); else window.localStorage.setItem(k, v); } catch (e) { /* storage off */ } }
+  HL.on = false;                 // pink option removed: selection (blue) only, the workbook is never changed
+  lsSet("fk.highlight", null);
+
+  function hlMenuLabel() {
+    var b = document.querySelector('#xmenu button[data-act="hl"]');
+    if (b) b.firstChild.textContent = (HL.on ? "✓ " : "") + "Highlight start cell";
+  }
+
+  async function toggleHighlight() {
+    HL.on = !HL.on;
+    lsSet("fk.highlight", HL.on ? "1" : "0");
+    hlMenuLabel();
+    if (!HL.on) await restoreHighlight();
+    else if (X.root && X.root.cx) await applyHighlight(X.root.cx.sheet, X.root.cx.addr);
+    status(HL.on ? "Start cell will show pink (a temporary overlay — your cell formatting is not changed)." : "Start-cell highlight off.");
+  }
+
+  // Pink is drawn with a temporary conditional-format rule on top of the cell,
+  // so the cell's own fill/format is never changed. Removing the rule restores the look exactly.
+  async function applyHighlight(sheet, addr) {
+    await restoreHighlight();
+    if (!HL.on) return;
+    await Excel.run(async function (ctx) {
+      var wb = ctx.workbook;
+      wb.load("name");
+      var r = wb.worksheets.getItem(sheet).getRange(addr);
+      var cf = r.conditionalFormats.add(Excel.ConditionalFormatType.custom);
+      cf.custom.rule.formula = "=TRUE";
+      cf.custom.format.fill.color = HL_COLOR;
+      cf.load("id");
+      await ctx.sync();
+      var saved = { book: wb.name, sheet: sheet, addr: addr, cf: cf.id };
+      lsSet("fk.hlSaved", JSON.stringify(saved));   // lets a crash be cleaned up next time
+      HL.saved = saved;
+    });
+  }
+
+  async function restoreHighlight() {
+    var saved = HL.saved;
+    if (!saved) { try { saved = JSON.parse(lsGet("fk.hlSaved") || "null"); } catch (e) { saved = null; } }
+    if (!saved) return;
+    await Excel.run(async function (ctx) {
+      var wb = ctx.workbook;
+      wb.load("name");
+      await ctx.sync();
+      if (wb.name !== saved.book) return;            // belongs to another workbook
+      var ws = wb.worksheets.getItemOrNullObject(saved.sheet);
+      await ctx.sync();
+      if (!ws.isNullObject && saved.cf) {
+        var cfs = ws.getRange(saved.addr).conditionalFormats;
+        cfs.load("items/id");
+        await ctx.sync();
+        cfs.items.forEach(function (c) { if (c.id === saved.cf) c.delete(); });
+        await ctx.sync();
+      }
+      HL.saved = null;
+      lsSet("fk.hlSaved", null);
+    }).catch(function () { /* keep the record and retry next time */ });
+  }
+
   async function startX(mode) {
     showTab("trace");
     await showPane();
@@ -745,6 +847,7 @@
     var a;
     await Excel.run(async function (ctx) { a = await getActive(ctx); });
     await buildRoot(mode, a.sheet, a.addr);
+    if (HL.on) await applyHighlight(a.sheet, a.addr); else await restoreHighlight();
     $("xtitle").textContent = mode === "prec" ? "FormulaKit Explorer" : "FormulaKit Explorer — Dependents";
     $("xheadInfo").textContent = mode === "prec" ? "Info" : "Formula";
     X.cur = X.root;
@@ -851,6 +954,7 @@
     if (ED.on) { await saveEdit(); if (ED.on) return; }
     X.pushed = false;
     S.back = [];
+    await restoreHighlight();
     try { await Office.addin.hide(); } catch (e) { /* older Excel */ }
   }
 
@@ -1333,7 +1437,8 @@
     document.addEventListener("click", function () { if (menu) menu.classList.remove("on"); });
     var acts = {
       prec: tracePrecedents, dep: traceDependents, back: goBack,
-      map: function () { showTab("map"); }, format: function () { showTab("format"); }, keys: function () { showTab("keys"); }
+      map: function () { showTab("map"); }, format: function () { showTab("format"); }, keys: function () { showTab("keys"); },
+      hl: toggleHighlight
     };
     var mb = menu ? menu.querySelectorAll("button") : [];
     for (var m = 0; m < mb.length; m++) {
@@ -1342,6 +1447,7 @@
         guard(acts[ev.currentTarget.getAttribute("data-act")])();
       });
     }
+    hlMenuLabel();
     var backs = document.querySelectorAll("[data-back]");
     for (var q = 0; q < backs.length; q++) backs[q].addEventListener("click", function () { showTab("trace"); });
   }
@@ -1356,6 +1462,12 @@
       } catch (e) { console.warn("associate failed", id, e); }
     });
     try { Office.addin.setStartupBehavior(Office.StartupBehavior.load); } catch (e) { /* older Excel */ }
+    try {
+      Office.addin.onVisibilityModeChanged(function (args) {
+        if (args && args.visibilityMode === "Hidden") guard(restoreHighlight)();
+      });
+    } catch (e) { /* older Excel */ }
+    guard(restoreHighlight)();   // undo anything left over from a crash
   });
 
   // exposed for testing
