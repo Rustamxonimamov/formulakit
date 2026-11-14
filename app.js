@@ -1334,7 +1334,23 @@
     }
     if (!mods.length) return { error: "Add ⌘, ⌥ or ⌃ — a single key on its own can't be a shortcut." };
     if (mods.length === 1 && mods[0] === "Shift") return { error: "Shift alone isn't allowed — add ⌘, ⌥ or ⌃." };
-    return { combo: mods.concat(key).join("+") };
+    return { combo: mods.concat(key).join("+"), key: key, meta: ev.metaKey, ctrl: ev.ctrlKey, alt: ev.altKey, shift: ev.shiftKey };
+  }
+
+  // Excel versions differ in how they want Mac keys written; try the known spellings in turn.
+  function comboVariants(r) {
+    function j(parts) { return parts.filter(Boolean).concat(r.key).join("+"); }
+    var out = [];
+    if (SC.mac) {
+      out.push(j([r.meta && "Cmd", r.ctrl && "Ctrl", r.alt && "Alt", r.shift && "Shift"]));
+      out.push(j([r.ctrl && "Ctrl", r.meta && "Cmd", r.alt && "Alt", r.shift && "Shift"]));
+      out.push(j([r.meta && "Command", r.ctrl && "Ctrl", r.alt && "Option", r.shift && "Shift"]));
+      out.push(j([r.meta && "Cmd", r.ctrl && "Ctrl", r.alt && "Option", r.shift && "Shift"]));
+      if (r.meta && !r.ctrl) out.push(j(["Ctrl", r.alt && "Alt", r.shift && "Shift"]));   // Ctrl = ⌘ on Mac in some builds
+    } else {
+      out.push(j([r.ctrl && "Ctrl", r.alt && "Alt", r.shift && "Shift"]));
+    }
+    return out.filter(function (v, i) { return out.indexOf(v) === i; });
   }
 
   async function onKeyCapture(ev) {
@@ -1362,14 +1378,21 @@
       var used = await Office.actions.areShortcutsInUse([combo]);
       if (used && used[0] && used[0].inUse) note = " Excel also uses it — the first time you press it, Excel will ask which to keep.";
     } catch (e) { /* optional check */ }
-    try {
-      var o = {};
-      o[id] = combo;
-      await Office.actions.replaceShortcuts(o);
-      SC.cur = (await Office.actions.getShortcuts()) || SC.cur;
-      SC.msg[id] = { cls: "ok", text: "Saved: " + prettyKey(SC.cur[id] || combo) + "." + note };
-    } catch (e) {
-      SC.msg[id] = { cls: "err", text: "Excel didn't accept " + prettyKey(combo) + " (" + friendly(e) + ")." };
+    var variants = comboVariants(r), saved = null, lastErr = null;
+    for (var vi = 0; vi < variants.length && !saved; vi++) {
+      try {
+        var o = {};
+        o[id] = variants[vi];
+        await Office.actions.replaceShortcuts(o);
+        saved = variants[vi];
+      } catch (e) { lastErr = e; }
+    }
+    if (saved) {
+      try { SC.cur = (await Office.actions.getShortcuts()) || SC.cur; } catch (e) { /* keep */ }
+      if (!SC.cur[id]) SC.cur[id] = saved;
+      SC.msg[id] = { cls: "ok", text: "Saved: " + prettyKey(SC.cur[id]) + "." + note };
+    } else {
+      SC.msg[id] = { cls: "err", text: "Excel didn't accept " + prettyKey(combo) + " in any format (" + friendly(lastErr) + "). Try a different combination, e.g. ⌃⌥ + letter." };
     }
     refreshKeyLabels();
     renderKeysPage();
